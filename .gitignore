@@ -1,0 +1,50 @@
+# Dependencies, downloaded components and portable builds
+node_modules/
+/.cache/
+/dist/
+/package/
+/tools/
+/weights/
+/vendor-sources/
+/*.tgz
+
+# Local inputs, generated results and credentials
+/data/
+/outputs/
+/test-output/
+/*.wav
+/*.mp4
+/*.bin
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test runs; tests/e2e/fixtures contains synthetic checked-in media
+/tests/e2e/.e2e/
+/tests/e2e/.e2e-data/
+/tests/e2e/.runner*/
+/tests/e2e/*.zip
+/tests/runtime-data/
+/tests/fixtures/
+/tests/*runtime*/
+/tests/*-fixtures/
+/tests/*-input.wav
+/tests/native/*-portable/
+/tests/native/*-fixtures/
+/tests/native/baseline-source/
+/tests/native/backend-baseline.mjs
+/tests/native/outputs/
+/tests/native/*-report.*
+/tests/ui/*.json
+/tests/ui/*.wav
+/tests/ui/session/
+*.png
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

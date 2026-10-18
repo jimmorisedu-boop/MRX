@@ -1,0 +1,21 @@
+{
+  "name": "mrx-local",
+  "version": "1.0.0",
+  "description": "Офлайн локальное разделение звука MRX",
+  "scripts": {
+    "start": "node app/server.mjs",
+    "test": "node --test tests/backend.test.mjs"
+  },
+  "keywords": [],
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@audio/neural-runtime": "0.1.1",
+    "@audio/neural-separate": "0.6.0",
+    "@audio/resample-sinc": "1.1.2",
+    "archiver": "7.0.1",
+    "busboy": "1.6.0",
+    "fourier-transform": "2.4.1",
+    "onnxruntime-node": "1.29.0"
+  }
+}

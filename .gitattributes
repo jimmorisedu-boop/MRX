@@ -1,0 +1,14 @@
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.wav binary
+*.mp4 binary

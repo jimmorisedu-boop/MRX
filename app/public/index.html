@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f6f8">
+    <meta name="description" content="MRX — локальное разделение звука на речь, музыку и эффекты.">
+    <title>MRX — Разделение звука</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell" id="app" data-view="loading">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="MRX, в начало">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+              <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <circle cx="7" cy="6" r="1.4" fill="currentColor"/><circle cx="14" cy="12" r="1.4" fill="currentColor"/><circle cx="10" cy="18" r="1.4" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <span class="brand-name">MRX</span>
+            <span class="brand-subtitle">Разделение звука</span>
+          </span>
+        </a>
+        <div class="topbar-actions">
+          <span class="connection-state is-loading" id="connection-state" role="status" aria-live="polite">
+            <span class="state-dot" aria-hidden="true"></span>
+            Запускаем MRX…
+          </span>
+          <button class="button button-tertiary" id="shutdown-button" type="button" disabled>Закрыть</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="workbench" aria-labelledby="page-title">
+          <h1 class="visually-hidden" id="page-title">Разделить звук</h1>
+
+          <div class="drop-zone" id="drop-zone" data-state="idle" tabindex="0" role="button" aria-labelledby="drop-title" aria-describedby="drop-hint privacy-note">
+            <div class="drop-zone-inner">
+              <div class="drop-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32" width="30" height="30" fill="none">
+                  <path d="M16 21V6m0 0-5.2 5.2M16 6l5.2 5.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M7 19.5v4A2.5 2.5 0 0 0 9.5 26h13a2.5 2.5 0 0 0 2.5-2.5v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="drop-copy">
+                <strong id="drop-title">Добавьте аудио или видео</strong>
+                <span id="drop-hint">Перетащите файлы или выберите их</span>
+              </div>
+              <button class="button button-primary" id="choose-button" type="button">Выбрать файлы</button>
+              <input id="file-input" class="visually-hidden" type="file" multiple accept="audio/*,video/*,.mkv,.mp4,.mov,.avi,.webm,.wav,.mp3,.flac,.aac,.m4a,.ogg,.opus">
+            </div>
+            <div class="drop-upload" id="upload-progress-wrap" hidden>
+              <div class="upload-progress-head">
+                <span id="upload-progress-label">Загрузка файлов</span>
+                <span class="tabular" id="upload-progress-value">0%</span>
+              </div>
+              <progress id="upload-progress" max="100" value="0" aria-label="Прогресс загрузки файлов"></progress>
+            </div>
+          </div>
+          <p class="privacy-note" id="privacy-note">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true"><rect x="3.25" y="7" width="9.5" height="6.25" rx="1.25" stroke="currentColor" stroke-width="1.2"/><path d="M5.25 7V5.5a2.75 2.75 0 1 1 5.5 0V7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            Файлы остаются на компьютере · без интернета.
+          </p>
+        </section>
+
+        <section class="queue-section" aria-labelledby="queue-title">
+          <div class="section-heading">
+            <div class="section-title-row">
+              <h2 id="queue-title">Файлы</h2>
+              <span class="queue-count" id="queue-count">0 файлов</span>
+            </div>
+            <div class="queue-heading-tools">
+              <div class="file-switcher" id="file-switcher" hidden>
+                <button class="button button-tertiary file-switcher-button" id="previous-file" type="button" aria-label="Предыдущий файл" disabled>
+                  <span aria-hidden="true">‹</span>
+                </button>
+                <select class="file-select" id="file-select" aria-label="Выберите файл"></select>
+                <span class="file-position" id="file-position" aria-live="polite">1 из 1</span>
+                <button class="button button-tertiary file-switcher-button" id="next-file" type="button" aria-label="Следующий файл" disabled>
+                  <span aria-hidden="true">›</span>
+                </button>
+              </div>
+              <div class="save-all-action" id="save-all-action" hidden>
+                <button class="button button-primary save-all-button" id="save-all-button" type="button" disabled>Сохранить всё</button>
+                <span class="save-all-status" id="save-all-status" role="status" aria-live="polite">Добавьте файл</span>
+              </div>
+              <button class="button button-tertiary button-retry" id="retry-button" type="button" hidden>Повторить</button>
+            </div>
+          </div>
+
+          <div class="offline-banner" id="offline-banner" role="alert" hidden>
+            <span class="offline-icon" aria-hidden="true">!</span>
+            <div>
+              <strong>MRX недоступен</strong>
+              <span id="offline-message">Проверьте локальное приложение и повторите попытку.</span>
+            </div>
+            <button class="button button-tertiary" id="offline-retry-button" type="button">Повторить</button>
+          </div>
+
+          <div class="loading-card" id="loading-card" aria-hidden="true" hidden>
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span>Загружаем очередь…</span>
+          </div>
+
+          <ol class="queue-list" id="queue-list" aria-live="polite" aria-relevant="additions text"></ol>
+
+          <div class="empty-queue" id="empty-queue" hidden>
+            <div>
+              <strong>Здесь появятся ваши файлы</strong>
+              <span>Добавьте первый файл в зоне выше.</span>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        <span class="footer-version">MRX · v1.0</span>
+      </footer>
+
+      <div class="shutdown-overlay" id="shutdown-overlay" hidden>
+        <div class="shutdown-card" role="status" aria-live="polite">
+          <span class="shutdown-mark" aria-hidden="true">✓</span>
+          <h2>Приложение закрыто</h2>
+          <p id="shutdown-message">MRX завершает работу. Это окно закроется автоматически.</p>
+        </div>
+      </div>
+
+      <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+      <div class="sr-only" id="live-region" role="status" aria-live="polite" aria-atomic="true"></div>
+    </div>
+  </body>
+</html>
