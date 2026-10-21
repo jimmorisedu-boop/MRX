@@ -33,6 +33,7 @@ node_modules/
 /tests/*-fixtures/
 /tests/*-input.wav
 /tests/native/*-portable/
+/tests/native/portable/
 /tests/native/*-fixtures/
 /tests/native/baseline-source/
 /tests/native/backend-baseline.mjs
