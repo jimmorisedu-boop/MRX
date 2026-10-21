@@ -49,7 +49,9 @@ async function run() {
   const details = JSON.parse(await fsp.readFile(metadata, 'utf8'))
   assert.equal(details.desktop, true)
   assert.equal(details.platform, 'win32')
-  assert.ok(details.width >= 680 && details.height >= 540, `Unexpected window size: ${details.width}x${details.height}`)
+  // capturePage measures the content area without the window frame, so at
+  // 100% display scaling the 680x540 minimum window gives about 664x501.
+  assert.ok(details.width >= 640 && details.height >= 480, `Unexpected window size: ${details.width}x${details.height}`)
   console.log(`DESKTOP_SMOKE_OK pid=${details.pid} size=${details.width}x${details.height}`)
 }
 
