@@ -249,7 +249,8 @@ async function run() {
       }
       const actionSelectors = ['.output-row a[download]', '.zip-row a', '.output-folder-row button']
       const actionHits = actionSelectors.flatMap((selector) => [...document.querySelectorAll(selector)].map(pointHit))
-      return { actionHits, allActionsHit: actionHits.length === 5 && actionHits.every(Boolean) }
+      // Three stem downloads, the ZIP link, "Открыть папку" and "Удалить".
+      return { actionHits, allActionsHit: actionHits.length === 6 && actionHits.every(Boolean) }
     })
     assertMetric(interactionResult.allActionsHit, 'minimum window action hit-test failed', interactionResult)
     const firstToggle = window.locator('.preview-toggle').first()

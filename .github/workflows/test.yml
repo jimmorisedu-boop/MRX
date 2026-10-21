@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # The app, its bundled FFmpeg and the ONNX runtime are Windows x64 only.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Same version as the runtime shipped in the portable build.
+          node-version: 22.23.4
+          cache: npm
+
+      - name: Cache model and FFmpeg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            weights/mrx
+            tools/ffmpeg
+          key: deps-${{ hashFiles('scripts/deps.json') }}
+
+      - name: Fetch model and FFmpeg (pinned, SHA-256 checked)
+        run: node scripts/fetch-deps.mjs model ffmpeg
+
+      - run: npm ci
+
+      # Backend suites and the desktop exit logic. The native Electron and
+      # browser e2e suites need a built portable app and a desktop session,
+      # so they run locally (see README).
+      - run: npm test

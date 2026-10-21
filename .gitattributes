@@ -12,3 +12,5 @@
 *.ps1 text eol=crlf
 *.wav binary
 *.mp4 binary
+*.ico binary
+*.yml text eol=lf

@@ -11,7 +11,7 @@ import crypto from 'node:crypto'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DATA = path.join(ROOT, 'tests', 'runtime-data')
 const FIXTURES = path.join(ROOT, 'tests', 'fixtures')
-const STAGED_FFMPEG = path.join(ROOT, 'tools', 'ffmpeg-staging', 'ffmpeg-master-latest-win64-lgpl', 'bin', 'ffmpeg.exe')
+const STAGED_FFMPEG = path.join(ROOT, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe')
 const FFMPEG = process.env.MRX_FFMPEG || (existsSync(STAGED_FFMPEG) ? STAGED_FFMPEG : 'ffmpeg.exe')
 const PORT = Number(process.env.MRX_TEST_PORT || 17981)
 let server

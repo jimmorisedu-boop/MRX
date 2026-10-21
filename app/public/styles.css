@@ -580,6 +580,8 @@ h2 {
 .zip-row a:hover { color: var(--blue-dark); }
 .output-folder-row { justify-content: flex-end; margin-top: 3px; }
 .output-folder-button { min-height: 29px; padding: 4px 8px; font-size: 11px; }
+.output-folder-row .job-remove-button { min-height: 29px; padding: 4px 8px; font-size: 11px; }
+.job-remove-button[data-armed="true"] { color: var(--red); border-color: var(--red); background: var(--red-soft); }
 
 .job-error {
   max-width: 100%;
@@ -733,7 +735,8 @@ h2 {
     align-self: center;
     margin-top: 0;
   }
-  .output-folder-button { min-height: 25px; padding: 3px 6px; }
+  .output-folder-button,
+  .output-folder-row .job-remove-button { min-height: 25px; padding: 3px 6px; }
   .app-footer { padding-top: 7px; padding-bottom: 9px; }
 
   .toast {

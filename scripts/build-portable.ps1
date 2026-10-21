@@ -1,38 +1,55 @@
 [CmdletBinding()]
 param(
   [string]$OutDir = '',
-  [string]$NodeVersion = '22.23.4',
-  [string]$NodeSha = 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20',
-  [string]$ElectronVersion = '44.9.0',
+  # Use a local FFmpeg folder (containing ffmpeg.exe) instead of the pinned
+  # build from scripts\deps.json; its SHA-256 must then be passed as well.
   [string]$FfmpegSource = '',
-  # SHA-256 of the pinned BtbN win64-lgpl ffmpeg.exe described in
-  # vendor-sources\FFmpeg-BUILD-PROVENANCE.txt. Change it only together with
-  # a new source archive and provenance file.
-  [string]$FfmpegSha = '6e01b300cbe8d18d0586fb953a14659572132da94160b3bc3e850253ff8cdc2a',
+  [string]$FfmpegSha = '',
   [string]$ElectronSource = '',
   [string]$VCRedistDir = '',
   [string]$FfmpegSourceArchive = '',
+  # Optional Authenticode signing of MRX.exe: a certificate thumbprint from
+  # the Windows certificate store, or a PFX file whose password is read from
+  # $env:MRX_SIGN_PFX_PASSWORD (never passed on the command line of this
+  # script). Without either, MRX.exe stays unsigned.
+  [string]$SignThumbprint = '',
+  [string]$SignPfx = '',
+  [string]$SignTimestampUrl = 'http://timestamp.digicert.com',
   [switch]$SkipZip
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = Join-Path $Root 'dist\MRX' }
-if ([string]::IsNullOrWhiteSpace($FfmpegSource)) { $FfmpegSource = Join-Path $Root 'tools\ffmpeg-staging\ffmpeg-master-latest-win64-lgpl\bin' }
 $Out = [IO.Path]::GetFullPath($OutDir)
 if ($Out -eq $Root -or -not $Out.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
   throw "OutDir must be below the source root: $Out"
 }
 
-$NodeZip = Join-Path $Root ".cache\node-v$NodeVersion-win-x64.zip"
-$NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"
-$ElectronZip = Join-Path $Root ".cache\electron-v$ElectronVersion-win32-x64.zip"
-$ElectronSha = '88e08039d0ef359bab9f674e8051fa103bd8628ea7c5a5e1daaa610a8a0c6931'
-$ElectronUrl = "https://github.com/electron/electron/releases/download/v$ElectronVersion/electron-v$ElectronVersion-win32-x64.zip"
-$Model = Join-Path $Root 'weights\mrx\mrx.int8.onnx'
-$ModelSha = 'd876c92d224f5d8cd2207d528b23369da895a6de71fb24132416fcb16f9f8424'
-$ModelRevision = 'dedc823a0bea2ed085d19e8b7f32589d35169ee8'
-$ModelUrl = "https://huggingface.co/audiojs/mrx/resolve/$ModelRevision/mrx.int8.onnx"
+# Every external download is pinned in scripts\deps.json and fetched and
+# verified by scripts\fetch-deps.mjs (also used by CI and for local setup).
+$Deps = Get-Content -LiteralPath (Join-Path $Root 'scripts\deps.json') -Raw | ConvertFrom-Json
+$fetchGroups = @('runtime', 'model', 'ffmpeg-sources')
+if ([string]::IsNullOrWhiteSpace($FfmpegSource)) { $fetchGroups += 'ffmpeg' }
+& node (Join-Path $Root 'scripts\fetch-deps.mjs') @fetchGroups
+if ($LASTEXITCODE -ne 0) { throw "fetch-deps.mjs failed with exit code $LASTEXITCODE" }
+
+$NodeVersion = $Deps.node.version
+$NodeZip = Join-Path $Root $Deps.node.file
+$NodeSha = $Deps.node.sha256
+$NodeUrl = $Deps.node.url
+$ElectronVersion = $Deps.electron.version
+$ElectronSha = $Deps.electron.sha256
+$ElectronUrl = $Deps.electron.url
+$Model = Join-Path $Root $Deps.model.file
+$ModelSha = $Deps.model.sha256
+if ([string]::IsNullOrWhiteSpace($FfmpegSource)) {
+  $FfmpegSource = Join-Path $Root (Join-Path $Deps.ffmpeg.dir 'bin')
+  $FfmpegSha = $Deps.ffmpeg.exeSha256
+} elseif ([string]::IsNullOrWhiteSpace($FfmpegSha)) {
+  throw 'Pass -FfmpegSha together with -FfmpegSource.'
+}
+if ([string]::IsNullOrWhiteSpace($FfmpegSourceArchive)) { $FfmpegSourceArchive = Join-Path $Root $Deps.ffmpegSource.file }
 $Ffmpeg = Join-Path $FfmpegSource 'ffmpeg.exe'
 
 function Ensure-Hash([string]$Path, [string]$Expected, [string]$Label) {
@@ -45,30 +62,11 @@ function Copy-FileIfPresent([string]$Source, [string]$Destination) {
   if (Test-Path -LiteralPath $Source -PathType Leaf) { Copy-Item -LiteralPath $Source -Destination $Destination -Force }
 }
 
-if (-not (Test-Path -LiteralPath $NodeZip -PathType Leaf)) {
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $NodeZip) | Out-Null
-  Invoke-WebRequest -Uri $NodeUrl -OutFile $NodeZip
-}
 Ensure-Hash $NodeZip $NodeSha 'Node.js archive'
-if ([string]::IsNullOrWhiteSpace($ElectronSource)) { $ElectronSource = $ElectronZip }
-if (-not (Test-Path -LiteralPath $ElectronSource -PathType Leaf)) {
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ElectronSource) | Out-Null
-  Invoke-WebRequest -Uri $ElectronUrl -OutFile $ElectronSource
-}
+if ([string]::IsNullOrWhiteSpace($ElectronSource)) { $ElectronSource = Join-Path $Root $Deps.electron.file }
 Ensure-Hash $ElectronSource $ElectronSha 'Electron archive'
-if (-not (Test-Path -LiteralPath $Model -PathType Leaf)) {
-  # The model is pinned to a Hugging Face revision and verified below.
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Model) | Out-Null
-  $modelPart = "$Model.part"
-  Invoke-WebRequest -Uri $ModelUrl -OutFile $modelPart
-  Ensure-Hash $modelPart $ModelSha 'Downloaded MRX model'
-  Move-Item -LiteralPath $modelPart -Destination $Model -Force
-}
 Ensure-Hash $Model $ModelSha 'MRX model'
-if (-not (Test-Path -LiteralPath $Ffmpeg -PathType Leaf)) {
-  throw "LGPL FFmpeg binary not found: $Ffmpeg. Unpack the pinned BtbN build listed in vendor-sources\FFmpeg-BUILD-PROVENANCE.txt there, or pass -FfmpegSource."
-}
-Ensure-Hash $Ffmpeg $FfmpegSha 'FFmpeg binary (see vendor-sources\FFmpeg-BUILD-PROVENANCE.txt)'
+Ensure-Hash $Ffmpeg $FfmpegSha 'FFmpeg binary'
 
 if ([string]::IsNullOrWhiteSpace($VCRedistDir)) {
   # Visual Studio keeps redistributable CRT folders at a fixed depth, so a
@@ -116,6 +114,25 @@ try {
   # installed by `npm ci`.
   & node (Join-Path $Root 'scripts\finalize-exe.mjs') (Join-Path $Out 'MRX.exe') '1.0.0'
   if ($LASTEXITCODE -ne 0) { throw "finalize-exe.mjs failed with exit code $LASTEXITCODE" }
+  # Signing comes last: editing resources or flipping fuses afterwards would
+  # invalidate the signature.
+  if ($SignThumbprint -or $SignPfx) {
+    $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+      Sort-Object { $_.Directory.Parent.Name -as [version] } -Descending |
+      Select-Object -First 1 -ExpandProperty FullName
+    if (-not $signtool) { throw 'signtool.exe from the Windows 10/11 SDK was not found.' }
+    $signArgs = @('sign', '/fd', 'SHA256')
+    if ($SignTimestampUrl) { $signArgs += @('/tr', $SignTimestampUrl, '/td', 'SHA256') }
+    if ($SignThumbprint) {
+      $signArgs += @('/sha1', $SignThumbprint)
+    } else {
+      if (-not (Test-Path -LiteralPath $SignPfx -PathType Leaf)) { throw "PFX file not found: $SignPfx" }
+      $signArgs += @('/f', $SignPfx)
+      if ($env:MRX_SIGN_PFX_PASSWORD) { $signArgs += @('/p', $env:MRX_SIGN_PFX_PASSWORD) }
+    }
+    & $signtool @signArgs (Join-Path $Out 'MRX.exe')
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+  }
   Get-ChildItem -LiteralPath $electronStage -Force | Where-Object Name -ne 'electron.exe' | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Out $_.Name) -Recurse -Force
   }
@@ -170,8 +187,8 @@ try {
   Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $Out 'README.md') -Force -ErrorAction SilentlyContinue
 
   New-Item -ItemType Directory -Force -Path (Join-Path $Out 'LICENSES') | Out-Null
-  $ffLicense = Join-Path $FfmpegSource '..\LICENSE.txt'
-  Copy-FileIfPresent $ffLicense (Join-Path $Out 'LICENSES\FFmpeg-LGPL-3.0.txt')
+  # The LGPL text is mandatory for shipping FFmpeg, so a missing file fails.
+  Copy-Item -LiteralPath (Join-Path $FfmpegSource '..\LICENSE.txt') -Destination (Join-Path $Out 'LICENSES\FFmpeg-LGPL-3.0.txt') -Force
   Copy-FileIfPresent (Join-Path $Out 'runtime\LICENSE') (Join-Path $Out 'LICENSES\Node-MIT.txt')
   Copy-FileIfPresent (Join-Path $electronStage 'LICENSE') (Join-Path $Out 'LICENSES\Electron.txt')
   if (-not (Test-Path -LiteralPath (Join-Path $Out 'LICENSES\Electron.txt') -PathType Leaf)) {
@@ -200,10 +217,11 @@ Exact configure output:
 $ffBuildConf
 "@
   Set-Content -LiteralPath (Join-Path $Out 'LICENSES\FFmpeg-BUILD.txt') -Value $ffBuildNote -Encoding utf8
-  $vendorSources = Join-Path $Root 'vendor-sources'
-  Copy-FileIfPresent (Join-Path $vendorSources 'FFmpeg-BUILD-PROVENANCE.txt') (Join-Path $Out 'LICENSES\FFmpeg-BUILD-PROVENANCE.txt')
-  Copy-FileIfPresent (Join-Path $vendorSources 'BtbN-FFmpeg-Builds-63ac3265b0789ea16c7b1f8351cd2ad195a28722.tar.gz') (Join-Path $Out 'LICENSES\FFmpeg-BtbN-BUILD-SOURCE.tar.gz')
-  Copy-FileIfPresent (Join-Path $vendorSources 'BtbN-FFmpeg-Builds-latest-checksums.sha256') (Join-Path $Out 'LICENSES\FFmpeg-BtbN-CHECKSUMS.sha256')
+  # Provenance is tracked in git; the recipe archive and BtbN checksums were
+  # fetched and verified by fetch-deps.mjs.
+  Copy-Item -LiteralPath (Join-Path $Root 'third_party\FFmpeg-BUILD-PROVENANCE.txt') -Destination (Join-Path $Out 'LICENSES\FFmpeg-BUILD-PROVENANCE.txt') -Force
+  Copy-Item -LiteralPath (Join-Path $Root $Deps.ffmpegRecipe.file) -Destination (Join-Path $Out 'LICENSES\FFmpeg-BtbN-BUILD-SOURCE.tar.gz') -Force
+  Copy-Item -LiteralPath (Join-Path $Root $Deps.ffmpegChecksums.file) -Destination (Join-Path $Out 'LICENSES\FFmpeg-BtbN-CHECKSUMS.sha256') -Force
   if ($FfmpegSourceArchive -and (Test-Path -LiteralPath $FfmpegSourceArchive -PathType Leaf)) {
     Copy-Item -LiteralPath $FfmpegSourceArchive -Destination (Join-Path $Out 'LICENSES\FFmpeg-SOURCE-ARCHIVE.tar.gz') -Force
   }

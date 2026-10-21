@@ -169,4 +169,16 @@ test('cancelling a job allows a later job to recover', async ({ app, browser, sc
   await waitForJob(browser, 'post-cancel.wav', 'done')
   const recovered = await readJob(browser, 'post-cancel.wav')
   expect(recovered).toMatchObject({ outputCount: 3, downloadCount: 3, zipCount: 1 })
+
+  // Removal needs a second tap on the same button; the first one only arms it.
+  const cancelledCard = await selectJob(browser, 'cancel.wav')
+  await cancelledCard.getByRole('button', /Убрать файл cancel\.wav/).tap()
+  await expect(cancelledCard.getByRole('button', /Убрать файл cancel\.wav/)).toHaveText('Убрать из списка?')
+  await cancelledCard.getByRole('button', /Убрать файл cancel\.wav/).tap()
+  await expect.poll(() => readJob(browser, 'cancel.wav'), { timeout: 10_000, interval: 200 }).toBeNull()
+
+  const doneCard = await jobCard(browser, 'post-cancel.wav')
+  await doneCard.getByRole('button', /Удалить результаты файла post-cancel\.wav/).tap()
+  await doneCard.getByRole('button', /Удалить результаты файла post-cancel\.wav/).tap()
+  await expect.poll(() => readJob(browser, 'post-cancel.wav'), { timeout: 10_000, interval: 200 }).toBeNull()
 })

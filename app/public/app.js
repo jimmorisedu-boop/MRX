@@ -69,6 +69,11 @@
   let toastTimer = null;
   let lastAnnouncement = '';
   const cancelling = new Set();
+  // Removal asks for a second click on the same button instead of a native
+  // dialog; the request is armed for a few seconds only.
+  const REMOVE_CONFIRM_MS = 4000;
+  const removalArmed = new Map();
+  const removing = new Set();
   const jobNodes = new Map();
   const jobRenderKeys = new Map();
   let activePreview = null;
@@ -519,6 +524,29 @@
     return row;
   }
 
+  function removeButtonText(job) {
+    if (removing.has(job.id)) return 'Удаляем…';
+    if (removalArmed.has(job.id)) return job.status === 'done' ? 'Удалить результаты?' : 'Убрать из списка?';
+    return job.status === 'done' ? 'Удалить' : 'Убрать';
+  }
+
+  function syncRemoveButton(button, job) {
+    button.textContent = removeButtonText(job);
+    button.disabled = removing.has(job.id);
+    button.dataset.armed = removalArmed.has(job.id) ? 'true' : 'false';
+  }
+
+  function buildRemoveButton(job) {
+    const button = createElement('button', 'button button-quiet job-action job-remove-button', '');
+    button.type = 'button';
+    button.dataset.removeId = job.id;
+    button.setAttribute('aria-label', job.status === 'done'
+      ? `Удалить результаты файла ${job.name} с диска`
+      : `Убрать файл ${job.name} из списка`);
+    syncRemoveButton(button, job);
+    return button;
+  }
+
   function buildJobCard(job) {
     const item = createElement('li', 'job-card');
     item.dataset.status = job.status;
@@ -576,21 +604,28 @@
         })());
         outputWrap.append(zipRow);
       }
+      const folderRow = createElement('div', 'output-folder-row');
       if (desktopBridge) {
-        const folderRow = createElement('div', 'output-folder-row');
         const folderButton = createElement('button', 'button button-quiet job-action output-folder-button', 'Открыть папку');
         folderButton.type = 'button';
         folderButton.dataset.openFolderId = job.id;
         folderButton.setAttribute('aria-label', `Открыть папку результатов файла ${job.name}`);
         folderRow.append(folderButton);
-        outputWrap.append(folderRow);
       }
+      folderRow.append(buildRemoveButton(job));
+      outputWrap.append(folderRow);
       item.append(outputWrap);
     }
 
     if (job.status === 'error') {
       const error = createElement('p', 'job-error', errorDetail(job));
       item.append(error);
+    }
+
+    if (job.status === 'error' || job.status === 'cancelled' || (job.status === 'done' && !job.outputs.length)) {
+      const actions = createElement('div', 'job-actions');
+      actions.append(buildRemoveButton(job));
+      item.append(actions);
     }
 
     return item;
@@ -624,6 +659,49 @@
     if (cancel) {
       cancel.disabled = cancelling.has(job.id);
       cancel.textContent = cancelling.has(job.id) ? 'Отменяем…' : 'Отменить';
+    }
+    const remove = node.querySelector('[data-remove-id]');
+    if (remove) syncRemoveButton(remove, job);
+  }
+
+  function disarmRemoval(id) {
+    window.clearTimeout(removalArmed.get(id));
+    removalArmed.delete(id);
+  }
+
+  async function requestRemoval(id) {
+    const job = state.jobs.find((item) => item.id === id);
+    if (!job || removing.has(id)) return;
+    if (!removalArmed.has(id)) {
+      removalArmed.set(id, window.setTimeout(() => {
+        removalArmed.delete(id);
+        renderJobs();
+      }, REMOVE_CONFIRM_MS));
+      renderJobs();
+      setLiveMessage(job.status === 'done'
+        ? `Нажмите ещё раз, чтобы удалить результаты файла ${job.name} с диска.`
+        : `Нажмите ещё раз, чтобы убрать файл ${job.name} из списка.`);
+      return;
+    }
+    disarmRemoval(id);
+    removing.add(id);
+    renderJobs();
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(id)}/remove`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' }
+      });
+      const payload = await readResponse(response);
+      removing.delete(id);
+      applyState(payload, job.status === 'done' ? `Результаты файла ${job.name} удалены.` : `Файл ${job.name} убран из списка.`);
+    } catch (error) {
+      removing.delete(id);
+      const message = error instanceof Error ? error.message : 'Не удалось удалить результаты.';
+      showToast(message, 'error');
+      setLiveMessage(message);
+      if (/network|failed|fetch/i.test(message)) setOffline('Не удалось удалить результаты: нет связи с приложением.');
+      else renderJobs();
     }
   }
 
@@ -1057,6 +1135,11 @@
     const folderButton = event.target.closest('[data-open-folder-id]');
     if (folderButton) {
       openJobFolder(folderButton.dataset.openFolderId);
+      return;
+    }
+    const removeButton = event.target.closest('[data-remove-id]');
+    if (removeButton) {
+      requestRemoval(removeButton.dataset.removeId);
       return;
     }
     const button = event.target.closest('[data-cancel-id]');

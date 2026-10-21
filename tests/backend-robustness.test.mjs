@@ -12,7 +12,7 @@ const AdmZip = require('adm-zip')
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DATA = path.join(ROOT, 'tests', 'robustness-runtime')
 const FIXTURES = path.join(ROOT, 'tests', 'robustness-fixtures')
-const FFMPEG = process.env.MRX_FFMPEG || path.join(ROOT, 'tools', 'ffmpeg-staging', 'ffmpeg-master-latest-win64-lgpl', 'bin', 'ffmpeg.exe')
+const FFMPEG = process.env.MRX_FFMPEG || path.join(ROOT, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe')
 const PORT = Number(process.env.MRX_ROBUSTNESS_PORT || 17986)
 const SESSION_TOKEN = 'mrx-robustness-session-token-0123456789'
 let server
@@ -286,6 +286,33 @@ test('desktop local-path jobs never delete the original file', async () => {
   assert.match((await missing.json()).error, /missing\.wav/)
   const directory = await submitLocal([FIXTURES])
   assert.equal(directory.status, 400)
+})
+
+test('removing a finished job deletes only its results folder', async () => {
+  const source = path.join(FIXTURES, 'local source.wav')
+  const original = await readFile(source)
+  const job = (await (await submitLocal([source])).json()).jobs.at(-1)
+  assert.equal((await waitForJob(job.id)).status, 'done')
+  const outputDir = path.join(DATA, 'outputs', job.id)
+  assert.ok(existsSync(outputDir))
+  const removed = await request(`/api/jobs/${job.id}/remove`, { method: 'POST' })
+  assert.equal(removed.status, 200)
+  assert.equal((await removed.json()).jobs.some(item => item.id === job.id), false)
+  assert.equal(existsSync(outputDir), false)
+  assert.deepEqual(await readFile(source), original)
+  assert.equal(existsSync(path.join(DATA, 'outputs', 'kept-result', 'kept.wav')), true)
+
+  const longSource = path.join(FIXTURES, 'long source.wav')
+  const running = (await (await submitLocal([longSource])).json()).jobs.at(-1)
+  await waitForJob(running.id, ['decoding', 'separating'], 30_000)
+  assert.equal((await request(`/api/jobs/${running.id}/remove`, { method: 'POST' })).status, 409)
+  await request(`/api/jobs/${running.id}/cancel`, { method: 'POST' })
+  await waitForJob(running.id, ['cancelled'], 30_000)
+  assert.equal((await request(`/api/jobs/${running.id}/remove`, { method: 'POST' })).status, 200)
+  assert.ok(existsSync(longSource))
+  assert.equal((await request('/api/jobs/000000000000000000000000/remove', { method: 'POST' })).status, 404)
+  const crossSite = await fetch(`${base}/api/jobs/${job.id}/remove`, { method: 'POST', headers: { cookie, origin: 'http://evil.example' } })
+  assert.equal(crossSite.status, 403)
 })
 
 test('worker rejects an over-long file before decoding it', async () => {

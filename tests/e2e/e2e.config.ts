@@ -26,7 +26,7 @@ export default {
           MRX_PORT: '17961',
           MRX_NO_BROWSER: '1',
           MRX_SESSION_TOKEN: SESSION_TOKEN,
-          MRX_FFMPEG: path.join(ROOT_DIR, 'dist', 'MRX', 'tools', 'ffmpeg.exe'),
+          MRX_FFMPEG: path.join(ROOT_DIR, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe'),
           MRX_WEIGHTS_DIR: path.join(ROOT_DIR, 'weights'),
           E2E_TELEMETRY_DISABLED: '1',
         },

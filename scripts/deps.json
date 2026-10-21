@@ -1,0 +1,49 @@
+{
+  "comment": "Every external download of the build, CI and local setup, pinned by SHA-256. scripts/fetch-deps.mjs fetches and verifies them; scripts/build-portable.ps1 reads the same values.",
+  "node": {
+    "version": "22.23.4",
+    "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-win-x64.zip",
+    "sha256": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
+    "file": ".cache/node-v22.23.4-win-x64.zip",
+    "root": "node-v22.23.4-win-x64"
+  },
+  "electron": {
+    "version": "44.9.0",
+    "url": "https://github.com/electron/electron/releases/download/v44.9.0/electron-v44.9.0-win32-x64.zip",
+    "sha256": "88e08039d0ef359bab9f674e8051fa103bd8628ea7c5a5e1daaa610a8a0c6931",
+    "file": ".cache/electron-v44.9.0-win32-x64.zip"
+  },
+  "model": {
+    "revision": "dedc823a0bea2ed085d19e8b7f32589d35169ee8",
+    "url": "https://huggingface.co/audiojs/mrx/resolve/dedc823a0bea2ed085d19e8b7f32589d35169ee8/mrx.int8.onnx",
+    "sha256": "d876c92d224f5d8cd2207d528b23369da895a6de71fb24132416fcb16f9f8424",
+    "file": "weights/mrx/mrx.int8.onnx"
+  },
+  "ffmpeg": {
+    "version": "n9.0.2-17-g2a571b6068",
+    "release": "autobuild-2026-09-30-13-08",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip",
+    "sha256": "6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432",
+    "file": ".cache/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip",
+    "root": "ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0",
+    "dir": "tools/ffmpeg",
+    "exeSha256": "0e482b853f2fd4821055d20cdce510f0eea6027037c04b994f454a2136e8868e"
+  },
+  "ffmpegSource": {
+    "commit": "2a571b606854520cf89804d8030c8b328e621689",
+    "url": "https://github.com/FFmpeg/FFmpeg/archive/2a571b606854520cf89804d8030c8b328e621689.tar.gz",
+    "sha256": "f02fc0809a13f37e3d4e1f74254d07e035a5ef01a6d91e727b915b1764d97540",
+    "file": ".cache/FFmpeg-2a571b606854520cf89804d8030c8b328e621689.tar.gz"
+  },
+  "ffmpegRecipe": {
+    "commit": "6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/archive/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz",
+    "sha256": "81da4f7c878dc0f60e6b8d0049a112e32178e20f025d468fe4e99e77b2dfe0ec",
+    "file": ".cache/BtbN-FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz"
+  },
+  "ffmpegChecksums": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/checksums.sha256",
+    "sha256": "e45436a222ab0de3b436940f4dbc5bd6df4d5929d19ed6122ce9c6ae57dd1fe6",
+    "file": ".cache/BtbN-autobuild-2026-09-30-13-08-checksums.sha256"
+  }
+}

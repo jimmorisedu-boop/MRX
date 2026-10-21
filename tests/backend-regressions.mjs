@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DATA = path.join(ROOT, 'tests', 'regression-runtime')
 const INPUT = path.join(ROOT, 'tests', 'regression-input.wav')
-const STAGED_FFMPEG = path.join(ROOT, 'tools', 'ffmpeg-staging', 'ffmpeg-master-latest-win64-lgpl', 'bin', 'ffmpeg.exe')
+const STAGED_FFMPEG = path.join(ROOT, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe')
 const PORT = Number(process.env.MRX_REGRESSION_PORT || 17982)
 let server
 let base

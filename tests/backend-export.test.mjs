@@ -12,7 +12,7 @@ const AdmZip = require('adm-zip')
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DATA = path.join(ROOT, 'tests', 'backend-export-runtime')
 const FIXTURES = path.join(ROOT, 'tests', 'backend-export-fixtures')
-const FFMPEG = process.env.MRX_FFMPEG || path.join(ROOT, 'tools', 'ffmpeg-staging', 'ffmpeg-master-latest-win64-lgpl', 'bin', 'ffmpeg.exe')
+const FFMPEG = process.env.MRX_FFMPEG || path.join(ROOT, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe')
 const NO_AUDIO_SOURCE = path.join(ROOT, 'tests', 'e2e', 'fixtures', 'no-audio.mp4')
 const PORT = Number(process.env.MRX_EXPORT_TEST_PORT || 17984)
 let server

@@ -1,0 +1,59 @@
+MRX portable: FFmpeg source and provenance
+===========================================
+
+The portable build bundles one static LGPL FFmpeg binary as tools\ffmpeg.exe.
+This note records where that binary comes from and which source matches it.
+It deliberately does not claim that the sources of the external libraries
+linked into the BtbN build are included, or that the binary can be rebuilt
+byte for byte. All values are pinned in scripts\deps.json and verified by
+scripts\fetch-deps.mjs before every build.
+
+Bundled binary
+--------------
+
+  ffmpeg version: n9.0.2-17-g2a571b6068-20260930
+  compiler (from -version): gcc 16.2.0 (crosstool-NG 1.29.0.7_b1a94f6)
+  variant: win64, static, LGPL (BtbN "LGPL, static" build of the 9.0 branch)
+  ffmpeg.exe SHA-256: 0e482b853f2fd4821055d20cdce510f0eea6027037c04b994f454a2136e8868e
+  The exact configure line is written to LICENSES\FFmpeg-BUILD.txt by the
+  build (ffmpeg -buildconf).
+
+FFmpeg source
+-------------
+
+  upstream mirror: https://github.com/FFmpeg/FFmpeg
+  commit: 2a571b606854520cf89804d8030c8b328e621689
+  commit page: https://github.com/FFmpeg/FFmpeg/commit/2a571b606854520cf89804d8030c8b328e621689
+  lineage (GitHub compare): 17 commits after tag n9.0.2 on branch release/9.0
+  archive URL: https://github.com/FFmpeg/FFmpeg/archive/2a571b606854520cf89804d8030c8b328e621689.tar.gz
+  archive SHA-256: f02fc0809a13f37e3d4e1f74254d07e035a5ef01a6d91e727b915b1764d97540
+  shipped as: LICENSES\FFmpeg-SOURCE-ARCHIVE.tar.gz
+  The archive contains FFmpeg's COPYING.GPLv2, COPYING.GPLv3,
+  COPYING.LGPLv2.1 and COPYING.LGPLv3 files.
+
+BtbN build
+----------
+
+  release: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08
+  release title: Auto-Build 2026-09-30 13:08, published 2026-09-30T13:09:24Z
+  artifact: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip
+  artifact SHA-256: 6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432
+    (matches the release's checksums.sha256)
+  checksums.sha256 SHA-256: e45436a222ab0de3b436940f4dbc5bd6df4d5929d19ed6122ce9c6ae57dd1fe6
+    shipped as: LICENSES\FFmpeg-BtbN-CHECKSUMS.sha256
+  recipe repository: https://github.com/BtbN/FFmpeg-Builds
+  recipe commit (the release tag's target): 6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b
+  recipe archive: https://github.com/BtbN/FFmpeg-Builds/archive/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz
+  recipe archive SHA-256: 81da4f7c878dc0f60e6b8d0049a112e32178e20f025d468fe4e99e77b2dfe0ec
+    shipped as: LICENSES\FFmpeg-BtbN-BUILD-SOURCE.tar.gz
+
+Availability
+------------
+
+BtbN keeps daily auto-builds for about two weeks. The builds of the last day
+of each month have stayed published for well over a year so far, which is
+why a month-end build is pinned here; this is observed behaviour, not a
+promise from BtbN. If the artifact URL disappears, place the zip with the
+SHA-256 above at .cache\ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip and
+fetch-deps.mjs uses it without downloading. Switching to another build means
+updating scripts\deps.json and this file together.

@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
 import Busboy from 'busboy'
-import archiver from 'archiver'
+import { ZipArchive } from 'archiver'
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT_DIR = path.resolve(APP_DIR, '..')
@@ -19,7 +19,10 @@ const CACHE_DIR = path.join(DATA_DIR, 'cache')
 const EXPORT_DIR = path.join(CACHE_DIR, 'exports')
 const WEIGHTS_DIR = path.resolve(process.env.MRX_WEIGHTS_DIR || path.join(ROOT_DIR, 'weights'))
 const WORKER_PATH = path.join(APP_DIR, 'separate-worker.mjs')
-const FFMPEG_PATH = path.resolve(process.env.MRX_FFMPEG || path.join(ROOT_DIR, 'tools', 'ffmpeg.exe'))
+// The portable build ships tools\ffmpeg.exe; a source checkout gets
+// tools\ffmpeg\bin\ffmpeg.exe from scripts/fetch-deps.mjs.
+const BUNDLED_FFMPEG = path.join(ROOT_DIR, 'tools', 'ffmpeg.exe')
+const FFMPEG_PATH = path.resolve(process.env.MRX_FFMPEG || (existsSync(BUNDLED_FFMPEG) ? BUNDLED_FFMPEG : path.join(ROOT_DIR, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe')))
 const MAX_FILE_BYTES = Number(process.env.MRX_MAX_FILE_BYTES || 1_500_000_000)
 const MAX_FILES = Number(process.env.MRX_MAX_FILES || 20)
 const START_PORT = Number(process.env.MRX_PORT || 17863)
@@ -307,7 +310,7 @@ async function streamJobZip(res, job) {
     'cache-control': 'no-store',
     'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(job.zipName)}`,
   })
-  const archive = archiver('zip', { zlib: { level: 1 } })
+  const archive = new ZipArchive({ zlib: { level: 1 } })
   res.once('close', () => { if (!res.writableFinished) archive.abort() })
   archive.on('warning', error => res.destroy(error))
   pipeline(archive, res, () => {})
@@ -504,7 +507,7 @@ async function writeExportArchive(exportId, snapshot) {
   try {
     await new Promise((resolve, reject) => {
       const output = createWriteStream(temporaryPath, { flags: 'wx' })
-      const archive = archiver('zip', { zlib: { level: 6 } })
+      const archive = new ZipArchive({ zlib: { level: 6 } })
       let settled = false
       let failure = null
       const fail = error => {
@@ -813,6 +816,23 @@ async function handle(req, res) {
     } catch (error) {
       return json(res, 400, { error: String(error?.message || error).slice(0, 500) })
     }
+  }
+  const removeMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/remove$/)
+  if (req.method === 'POST' && removeMatch) {
+    req.resume()
+    const jobId = decodePathSegment(removeMatch[1])
+    if (jobId === null) return json(res, 400, { error: 'Неверный идентификатор задачи' })
+    const job = jobs.get(jobId)
+    if (!job) return json(res, 404, { error: 'Задача не найдена' })
+    if (!['done', 'error', 'cancelled'].includes(job.status)) return json(res, 409, { error: 'Сначала дождитесь окончания обработки или отмените её' })
+    // Only this job's own results folder is removed; the user's source file
+    // is never touched.
+    const outputDir = path.resolve(OUTPUT_DIR, job.id)
+    if (!/^[a-f0-9]{24}$/.test(job.id) || !pathInside(OUTPUT_DIR, outputDir)) return json(res, 400, { error: 'Недопустимый путь результатов' })
+    await removeTree(outputDir)
+    if (existsSync(outputDir)) return json(res, 500, { error: 'Не удалось удалить папку результатов: файлы заняты другой программой' })
+    jobs.delete(job.id)
+    return json(res, 200, state())
   }
   const match = url.pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/)
   if (req.method === 'POST' && match) {
