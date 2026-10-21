@@ -178,6 +178,8 @@ try {
   Copy-Item -LiteralPath (Join-Path $Root 'app') -Destination (Join-Path $sourceRoot 'app') -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $Root 'desktop') -Destination (Join-Path $sourceRoot 'desktop') -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $Root 'scripts') -Destination (Join-Path $sourceRoot 'scripts') -Recurse -Force
+  # The build reads the FFmpeg provenance from here, so source\ stays buildable.
+  Copy-Item -LiteralPath (Join-Path $Root 'third_party') -Destination (Join-Path $sourceRoot 'third_party') -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $Root 'package.json') -Destination (Join-Path $sourceRoot 'package.json') -Force
   Copy-Item -LiteralPath (Join-Path $Root 'package-lock.json') -Destination (Join-Path $sourceRoot 'package-lock.json') -Force
   Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $sourceRoot 'README.md') -Force -ErrorAction SilentlyContinue
