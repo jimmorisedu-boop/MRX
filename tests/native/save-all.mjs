@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
-const DIST = path.join(ROOT, 'dist', 'MRX')
+const DIST = path.resolve(process.env.MRX_PORTABLE_DIR || path.join(ROOT, 'dist', 'MRX'))
 const SOURCE_APP = path.join(ROOT, 'app')
 const SOURCE_DESKTOP = path.join(ROOT, 'desktop')
 const PORTABLE = path.join(ROOT, 'tests', 'native', 'save-all-portable')

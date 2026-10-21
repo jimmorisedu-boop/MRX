@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
-const DIST = path.join(ROOT, 'dist', 'MRX')
+const DIST = path.resolve(process.env.MRX_PORTABLE_DIR || path.join(ROOT, 'dist', 'MRX'))
 const SOURCE_APP = path.join(ROOT, 'app')
 const SOURCE_DESKTOP = path.join(ROOT, 'desktop')
 const PORTABLE = path.join(ROOT, 'tests', 'native', 'portable')
@@ -250,6 +250,10 @@ async function runBusyScenario() {
     await installMocks(electronApp, path.join(DATA, 'busy-downloads'))
     await window.setInputFiles('#file-input', BUSY_INPUT)
     await window.waitForFunction(() => ['queued', 'decoding', 'separating', 'encoding'].includes(document.querySelector('.job-card')?.dataset.status), null, { timeout: 30_000 })
+    // Desktop picks are processed in place: nothing may be copied to uploads.
+    const uploadCopies = (await readdir(path.join(DATA, 'uploads')).catch(() => [])).filter(name => !name.startsWith('.'))
+    if (uploadCopies.length) throw new Error(`desktop input was copied into uploads: ${uploadCopies.join(', ')}`)
+    record('desktop input processed in place without an upload copy', 'pass', BUSY_INPUT)
     await setDialogResponses(electronApp, [0])
     await closeBrowserWindow(electronApp, window)
     await new Promise(resolve => setTimeout(resolve, 1_000))
@@ -263,10 +267,17 @@ async function runBusyScenario() {
     const closePromise = waitAppClosed(electronApp)
     await closeBrowserWindow(electronApp, window)
     await closePromise
-    await new Promise(resolve => setTimeout(resolve, 1_000))
-    const leftovers = (await readdir(path.join(DATA, 'outputs'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory())
+    // The server removes partial results only after the worker has exited
+    // (files still open on Windows cannot be deleted), so allow it a moment.
+    const closedAt = Date.now()
+    let leftovers = []
+    while (Date.now() - closedAt < 10_000) {
+      leftovers = (await readdir(path.join(DATA, 'outputs'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory())
+      if (!leftovers.length) break
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
     if (leftovers.length) throw new Error(`cancelled busy close left output directories: ${leftovers.map(entry => entry.name).join(', ')}`)
-    record('busy close response 1 cancels worker and cleans outputs', 'pass', 'Electron close event observed; no output job directory')
+    record('busy close response 1 cancels worker and cleans outputs', 'pass', `Electron close event observed; no output job directory after ${Date.now() - closedAt} ms`)
     await electronApp.close().catch(() => {})
   } catch (error) {
     await electronApp.close().catch(() => {})

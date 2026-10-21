@@ -63,6 +63,7 @@
   let offline = false;
   let shutdownRequested = false;
   let uploadXhr = null;
+  let localSubmitPending = false;
   let pollTimer = null;
   let pollInFlight = false;
   let toastTimer = null;
@@ -83,6 +84,10 @@
     if (className) element.className = className;
     if (text !== undefined && text !== null) element.textContent = String(text);
     return element;
+  }
+
+  function isSubmitting() {
+    return Boolean(uploadXhr) || localSubmitPending;
   }
 
   function clampProgress(value) {
@@ -170,7 +175,7 @@
       saveAllStatus.textContent = 'Приложение закрывается';
     } else if (offline) {
       saveAllStatus.textContent = 'Нет связи с приложением';
-    } else if (uploadXhr) {
+    } else if (isSubmitting()) {
       saveAllStatus.textContent = 'Ожидаем завершение загрузки';
     } else if (processing > 0 || busy) {
       saveAllStatus.textContent = ready > 0
@@ -186,7 +191,7 @@
       saveAllStatus.textContent = 'Нет готовых файлов';
     }
 
-    saveAllButton.disabled = saveAllPending || shutdownRequested || offline || Boolean(uploadXhr) || processing > 0 || busy || ready < 1;
+    saveAllButton.disabled = saveAllPending || shutdownRequested || offline || isSubmitting() || processing > 0 || busy || ready < 1;
     saveAllButton.setAttribute('aria-busy', saveAllPending ? 'true' : 'false');
   }
 
@@ -288,7 +293,7 @@
       app.dataset.view = 'loading';
     } else if (offline) {
       app.dataset.view = 'offline';
-    } else if (uploadXhr) {
+    } else if (isSubmitting()) {
       app.dataset.view = 'uploading';
     } else if (!state.jobs.length) {
       app.dataset.view = 'empty';
@@ -298,11 +303,11 @@
   }
 
   function updateControls() {
-    const canUpload = !shutdownRequested && !uploadXhr;
+    const canUpload = !shutdownRequested && !isSubmitting();
     chooseButton.disabled = !canUpload;
     fileInput.disabled = !canUpload;
     dropZone.setAttribute('aria-disabled', canUpload ? 'false' : 'true');
-    shutdownButton.disabled = shutdownRequested || Boolean(uploadXhr) || saveAllPending || hasWorkingState();
+    shutdownButton.disabled = shutdownRequested || isSubmitting() || saveAllPending || hasWorkingState();
     retryButton.hidden = !offline || shutdownRequested;
     offlineRetryButton.disabled = pollInFlight || shutdownRequested;
     updateSaveAllState();
@@ -675,7 +680,7 @@
     updateSelectedJobView();
     syncFileSwitcher();
     queueCount.textContent = countLabel(state.jobs.length);
-    const showEmpty = !initialLoading && !offline && !uploadXhr && state.jobs.length === 0 && !shutdownRequested;
+    const showEmpty = !initialLoading && !offline && !isSubmitting() && state.jobs.length === 0 && !shutdownRequested;
     emptyQueue.hidden = !showEmpty;
     loadingCard.hidden = !initialLoading || shutdownRequested;
     offlineBanner.hidden = !offline || shutdownRequested;
@@ -828,6 +833,49 @@
     renderJobs();
   }
 
+  // In the desktop app every picked or dropped file has a path on disk, so it
+  // is processed in place instead of being copied through an upload.
+  function localFilePaths(files) {
+    if (!desktopBridge || typeof desktopBridge.pathForFile !== 'function') return null;
+    const paths = files.map((file) => desktopBridge.pathForFile(file));
+    return paths.every((value) => typeof value === 'string' && value) ? paths : null;
+  }
+
+  async function submitLocalPaths(paths) {
+    localSubmitPending = true;
+    offline = false;
+    setConnection('loading', 'Добавляем файлы…');
+    dropZone.dataset.state = 'uploading';
+    setLiveMessage(`Добавляем: ${countLabel(paths.length)}.`);
+    updateControls();
+    setView();
+    try {
+      const response = await fetch('/api/jobs/local', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths })
+      });
+      const payload = await readResponse(response);
+      localSubmitPending = false;
+      dropZone.dataset.state = 'idle';
+      applyState(payload, addedLabel(paths.length));
+      showToast(`${addedLabel(paths.length)} в очередь.`, 'success');
+    } catch (error) {
+      localSubmitPending = false;
+      dropZone.dataset.state = 'idle';
+      const message = error instanceof Error ? error.message : 'Не удалось добавить файлы.';
+      showToast(message, 'error');
+      setLiveMessage(message);
+      if (/network|failed|fetch/i.test(message)) {
+        setOffline('Не удалось добавить файлы: нет связи с приложением.');
+      } else {
+        setConnection('online');
+        renderJobs();
+      }
+    }
+  }
+
   function uploadFiles(fileList) {
     const files = Array.from(fileList || []).filter((file) => file && typeof file.name === 'string');
     if (!files.length) return;
@@ -835,8 +883,13 @@
       showToast('Приложение уже закрывается.', 'error');
       return;
     }
-    if (uploadXhr) {
+    if (isSubmitting()) {
       showToast('Дождитесь окончания текущей загрузки.', 'error');
+      return;
+    }
+    const localPaths = localFilePaths(files);
+    if (localPaths) {
+      submitLocalPaths(localPaths);
       return;
     }
 
@@ -972,29 +1025,29 @@
   });
   dropZone.addEventListener('click', (event) => {
     if (event.target.closest('button')) return;
-    if (!uploadXhr && !shutdownRequested) fileInput.click();
+    if (!isSubmitting() && !shutdownRequested) fileInput.click();
   });
   dropZone.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
-    if (!uploadXhr && !shutdownRequested) fileInput.click();
+    if (!isSubmitting() && !shutdownRequested) fileInput.click();
   });
   dropZone.addEventListener('dragenter', (event) => {
     event.preventDefault();
-    if (!uploadXhr && !shutdownRequested) dropZone.dataset.state = 'dragover';
+    if (!isSubmitting() && !shutdownRequested) dropZone.dataset.state = 'dragover';
   });
   dropZone.addEventListener('dragover', (event) => {
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-    if (!uploadXhr && !shutdownRequested) dropZone.dataset.state = 'dragover';
+    if (!isSubmitting() && !shutdownRequested) dropZone.dataset.state = 'dragover';
   });
   dropZone.addEventListener('dragleave', () => {
-    if (!uploadXhr) dropZone.dataset.state = 'idle';
+    if (!isSubmitting()) dropZone.dataset.state = 'idle';
   });
   dropZone.addEventListener('drop', (event) => {
     event.preventDefault();
     dropZone.dataset.state = 'idle';
-    if (uploadXhr || shutdownRequested) {
+    if (isSubmitting() || shutdownRequested) {
       showToast('Дождитесь окончания текущего действия.', 'error');
       return;
     }
@@ -1025,8 +1078,9 @@
   retryButton.addEventListener('click', () => pollState());
   offlineRetryButton.addEventListener('click', () => pollState());
   shutdownButton.addEventListener('click', shutdown);
+  // MRX talks only to its own loopback server, so the browser's network
+  // "offline" event says nothing about it; polling detects a lost server.
   window.addEventListener('online', () => pollState());
-  window.addEventListener('offline', () => setOffline('Сетевое подключение отключено.'));
 
   renderJobs();
   pollState();

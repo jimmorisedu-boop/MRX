@@ -1,9 +1,14 @@
 [CmdletBinding()]
 param(
   [string]$OutDir = '',
-  [string]$NodeVersion = '22.14.0',
+  [string]$NodeVersion = '22.23.4',
+  [string]$NodeSha = 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20',
   [string]$ElectronVersion = '44.9.0',
   [string]$FfmpegSource = '',
+  # SHA-256 of the pinned BtbN win64-lgpl ffmpeg.exe described in
+  # vendor-sources\FFmpeg-BUILD-PROVENANCE.txt. Change it only together with
+  # a new source archive and provenance file.
+  [string]$FfmpegSha = '6e01b300cbe8d18d0586fb953a14659572132da94160b3bc3e850253ff8cdc2a',
   [string]$ElectronSource = '',
   [string]$VCRedistDir = '',
   [string]$FfmpegSourceArchive = '',
@@ -20,13 +25,14 @@ if ($Out -eq $Root -or -not $Out.StartsWith($Root + [IO.Path]::DirectorySeparato
 }
 
 $NodeZip = Join-Path $Root ".cache\node-v$NodeVersion-win-x64.zip"
-$NodeSha = '55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217'
 $NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"
 $ElectronZip = Join-Path $Root ".cache\electron-v$ElectronVersion-win32-x64.zip"
 $ElectronSha = '88e08039d0ef359bab9f674e8051fa103bd8628ea7c5a5e1daaa610a8a0c6931'
 $ElectronUrl = "https://github.com/electron/electron/releases/download/v$ElectronVersion/electron-v$ElectronVersion-win32-x64.zip"
 $Model = Join-Path $Root 'weights\mrx\mrx.int8.onnx'
 $ModelSha = 'd876c92d224f5d8cd2207d528b23369da895a6de71fb24132416fcb16f9f8424'
+$ModelRevision = 'dedc823a0bea2ed085d19e8b7f32589d35169ee8'
+$ModelUrl = "https://huggingface.co/audiojs/mrx/resolve/$ModelRevision/mrx.int8.onnx"
 $Ffmpeg = Join-Path $FfmpegSource 'ffmpeg.exe'
 
 function Ensure-Hash([string]$Path, [string]$Expected, [string]$Label) {
@@ -50,18 +56,29 @@ if (-not (Test-Path -LiteralPath $ElectronSource -PathType Leaf)) {
   Invoke-WebRequest -Uri $ElectronUrl -OutFile $ElectronSource
 }
 Ensure-Hash $ElectronSource $ElectronSha 'Electron archive'
+if (-not (Test-Path -LiteralPath $Model -PathType Leaf)) {
+  # The model is pinned to a Hugging Face revision and verified below.
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Model) | Out-Null
+  $modelPart = "$Model.part"
+  Invoke-WebRequest -Uri $ModelUrl -OutFile $modelPart
+  Ensure-Hash $modelPart $ModelSha 'Downloaded MRX model'
+  Move-Item -LiteralPath $modelPart -Destination $Model -Force
+}
 Ensure-Hash $Model $ModelSha 'MRX model'
-if (-not (Test-Path -LiteralPath $Ffmpeg -PathType Leaf)) { throw "LGPL FFmpeg binary not found: $Ffmpeg" }
+if (-not (Test-Path -LiteralPath $Ffmpeg -PathType Leaf)) {
+  throw "LGPL FFmpeg binary not found: $Ffmpeg. Unpack the pinned BtbN build listed in vendor-sources\FFmpeg-BUILD-PROVENANCE.txt there, or pass -FfmpegSource."
+}
+Ensure-Hash $Ffmpeg $FfmpegSha 'FFmpeg binary (see vendor-sources\FFmpeg-BUILD-PROVENANCE.txt)'
 
 if ([string]::IsNullOrWhiteSpace($VCRedistDir)) {
-  $vcRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-  $vcCandidates = foreach ($vcRoot in $vcRoots) {
-    if (Test-Path -LiteralPath $vcRoot) {
-      Get-ChildItem -LiteralPath $vcRoot -Directory -Recurse -ErrorAction SilentlyContinue -Filter 'Microsoft.VC143.CRT' |
-        Where-Object { $_.FullName -match '\\x64\\Microsoft\.VC143\.CRT$' }
-    }
+  # Visual Studio keeps redistributable CRT folders at a fixed depth, so a
+  # wildcard lookup replaces a recursive walk over all of Program Files.
+  $vcPatterns = foreach ($vcRoot in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }) {
+    Join-Path $vcRoot 'Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT'
   }
-  $VCRedistDir = ($vcCandidates | Select-Object -First 1 -ExpandProperty FullName)
+  $VCRedistDir = Get-ChildItem -Path $vcPatterns -Directory -ErrorAction SilentlyContinue |
+    Sort-Object { $_.Parent.Parent.Name -as [version] } -Descending |
+    Select-Object -First 1 -ExpandProperty FullName
 }
 if ([string]::IsNullOrWhiteSpace($VCRedistDir) -or -not (Test-Path -LiteralPath $VCRedistDir -PathType Container)) {
   throw 'Microsoft VC++ x64 redistributable files were not found. Pass -VCRedistDir to a legitimate Microsoft.VC143.CRT folder.'
@@ -81,7 +98,12 @@ try {
   $nodeRoot = Get-ChildItem -LiteralPath $stage -Directory | Where-Object Name -like "node-v$NodeVersion-win-x64" | Select-Object -First 1
   if (-not $nodeRoot) { throw 'Node archive layout is unexpected' }
   Move-Item -LiteralPath $nodeRoot.FullName -Destination $runtimeStage
-  Copy-Item -LiteralPath $runtimeStage -Destination (Join-Path $Out 'runtime') -Recurse -Force
+  # The app only runs node.exe; npm, npx and corepack from the archive are
+  # not shipped.
+  New-Item -ItemType Directory -Force -Path (Join-Path $Out 'runtime') | Out-Null
+  foreach ($runtimeFile in @('node.exe', 'LICENSE')) {
+    Copy-Item -LiteralPath (Join-Path $runtimeStage $runtimeFile) -Destination (Join-Path $Out "runtime\$runtimeFile") -Force
+  }
   foreach ($crtName in $crtNames) { Copy-Item -LiteralPath (Join-Path $VCRedistDir $crtName) -Destination (Join-Path $Out "runtime\$crtName") -Force }
 
   $electronStage = Join-Path $stage 'electron'
@@ -90,6 +112,10 @@ try {
   $electronExe = Join-Path $electronStage 'electron.exe'
   if (-not (Test-Path -LiteralPath $electronExe -PathType Leaf)) { throw 'Electron archive layout is unexpected' }
   Copy-Item -LiteralPath $electronExe -Destination (Join-Path $Out 'MRX.exe') -Force
+  # MRX version metadata and Electron fuses; needs the root devDependencies
+  # installed by `npm ci`.
+  & node (Join-Path $Root 'scripts\finalize-exe.mjs') (Join-Path $Out 'MRX.exe') '1.0.0'
+  if ($LASTEXITCODE -ne 0) { throw "finalize-exe.mjs failed with exit code $LASTEXITCODE" }
   Get-ChildItem -LiteralPath $electronStage -Force | Where-Object Name -ne 'electron.exe' | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Out $_.Name) -Recurse -Force
   }
@@ -100,7 +126,22 @@ try {
   New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
   Copy-Item -LiteralPath (Join-Path $Root 'app') -Destination (Join-Path $appRoot 'app') -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $Root 'desktop') -Destination (Join-Path $appRoot 'desktop') -Recurse -Force
-  Copy-Item -LiteralPath (Join-Path $Root 'node_modules') -Destination (Join-Path $appRoot 'node_modules') -Recurse -Force
+  # Production dependencies come from a clean install of package-lock.json,
+  # not from whatever the developer's node_modules happens to contain. Install
+  # scripts are skipped: onnxruntime-node ships its Windows binaries in the
+  # package and its postinstall only fetches optional CUDA files.
+  $depsStage = Join-Path $stage 'deps'
+  New-Item -ItemType Directory -Force -Path $depsStage | Out-Null
+  Copy-Item -LiteralPath (Join-Path $Root 'package.json') -Destination $depsStage -Force
+  Copy-Item -LiteralPath (Join-Path $Root 'package-lock.json') -Destination $depsStage -Force
+  Push-Location -LiteralPath $depsStage
+  try {
+    & npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+  } finally {
+    Pop-Location
+  }
+  Copy-Item -LiteralPath (Join-Path $depsStage 'node_modules') -Destination (Join-Path $appRoot 'node_modules') -Recurse -Force
   $ortBin = Join-Path $appRoot 'node_modules\onnxruntime-node\bin\napi-v6'
   foreach ($unused in @('darwin', 'linux')) { Remove-Item -LiteralPath (Join-Path $ortBin $unused) -Recurse -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath (Join-Path $ortBin 'win32\arm64') -Recurse -Force -ErrorAction SilentlyContinue

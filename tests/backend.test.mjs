@@ -17,6 +17,7 @@ const PORT = Number(process.env.MRX_TEST_PORT || 17981)
 let server
 let base
 let cookie
+const SESSION_TOKEN = 'mrx-test-session-token-0123456789abcdef'
 
 function runTool(command, args) {
   return new Promise((resolve, reject) => {
@@ -57,10 +58,6 @@ async function request(pathname, init = {}) {
   if (cookie) headers.set('cookie', cookie)
   if (init.method && init.method !== 'GET' && !headers.has('origin')) headers.set('origin', `${base}/`)
   const response = await fetch(`${base}${pathname}`, { ...init, headers })
-  if (!cookie) {
-    const setCookie = response.headers.get('set-cookie') || ''
-    cookie = setCookie.split(';')[0]
-  }
   return response
 }
 
@@ -141,10 +138,11 @@ before(async () => {
   server = spawn(process.execPath, ['app/server.mjs'], {
     cwd: ROOT,
     windowsHide: true,
-    env: { ...process.env, MRX_NO_BROWSER: '1', MRX_PORT: String(PORT), MRX_DATA_DIR: DATA, MRX_FFMPEG: FFMPEG },
+    env: { ...process.env, MRX_NO_BROWSER: '1', MRX_SESSION_TOKEN: SESSION_TOKEN, MRX_PORT: String(PORT), MRX_DATA_DIR: DATA, MRX_FFMPEG: FFMPEG },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   base = await waitReady(server)
+  cookie = `mrx_session_${new URL(base).port}=${SESSION_TOKEN}`
 })
 
 after(async () => {

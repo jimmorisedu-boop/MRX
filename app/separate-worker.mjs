@@ -14,6 +14,10 @@ const sampleRate = 44100
 let cancelled = false
 let activeProcess = null
 const MAX_PCM_BYTES = Number(process.env.MRX_MAX_DECODE_BYTES || 1_500_000_000)
+const PCM_BYTES_PER_SECOND = sampleRate * 2 * 4
+const MAX_SECONDS = MAX_PCM_BYTES / PCM_BYTES_PER_SECOND
+const LIMIT_LABEL = MAX_SECONDS >= 120 ? `${Math.floor(MAX_SECONDS / 60)} мин` : `${Math.floor(MAX_SECONDS)} с`
+const TOO_LONG_MESSAGE = `Файл слишком длинный: можно обработать не больше ${LIMIT_LABEL} звука. Разделите его на части.`
 
 process.on('message', message => {
   if (message?.type === 'cancel') {
@@ -53,6 +57,45 @@ function progress(status, value, message) {
   if (process.send) process.send({ type: 'progress', status, progress: value, message })
 }
 
+// Reads the container duration so an over-long file is rejected before it is
+// decoded up to the limit. Any probe problem is left to the decoder to report.
+function probeDuration() {
+  return new Promise(resolve => {
+    // Without an output FFmpeg prints the input summary and exits with 1.
+    const child = spawn(ffmpeg, ['-hide_banner', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', input], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    activeProcess = child
+    let stderr = ''
+    child.stderr.on('data', chunk => { if (stderr.length < 64_000) stderr += String(chunk) })
+    child.on('error', () => resolve(null))
+    child.on('close', () => {
+      activeProcess = null
+      const match = stderr.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/)
+      resolve(match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : null)
+    })
+  })
+}
+
+// Splits interleaved stereo f32le straight from the pipe chunks, so the PCM
+// is never held as one concatenated buffer plus an interleaved copy.
+function deinterleave(chunks, totalBytes) {
+  const frames = Math.floor(totalBytes / 8)
+  const left = new Float32Array(frames)
+  const right = new Float32Array(frames)
+  let frame = 0
+  let carry = Buffer.alloc(0)
+  for (let index = 0; index < chunks.length; index += 1) {
+    const bytes = carry.length ? Buffer.concat([carry, chunks[index]]) : chunks[index]
+    chunks[index] = null
+    const usable = bytes.length - (bytes.length % 8)
+    for (let offset = 0; offset < usable && frame < frames; offset += 8, frame += 1) {
+      left[frame] = bytes.readFloatLE(offset)
+      right[frame] = bytes.readFloatLE(offset + 4)
+    }
+    carry = bytes.subarray(usable)
+  }
+  return [left, right]
+}
+
 function runFfmpeg() {
   return new Promise((resolve, reject) => {
     progress('decoding', 2, 'Декодирование аудио…')
@@ -67,7 +110,7 @@ function runFfmpeg() {
     child.stdout.on('data', chunk => {
       totalBytes += chunk.length
       if (totalBytes > MAX_PCM_BYTES) {
-        stderr = 'Декодированный файл слишком большой для безопасной обработки'
+        stderr = TOO_LONG_MESSAGE
         child.kill()
         return
       }
@@ -87,18 +130,8 @@ function runFfmpeg() {
         }
         return reject(new Error(stderr.trim() || `ffmpeg завершился с кодом ${code ?? signal}`))
       }
-      const bytes = Buffer.concat(chunks)
-      if (bytes.length < 8 || bytes.length % 4) return reject(new Error('ffmpeg не вернул PCM-аудио'))
-      const values = new Float32Array(bytes.byteLength / 4)
-      for (let i = 0; i < values.length; i += 1) values[i] = bytes.readFloatLE(i * 4)
-      const frames = Math.floor(values.length / 2)
-      const left = new Float32Array(frames)
-      const right = new Float32Array(frames)
-      for (let i = 0; i < frames; i += 1) {
-        left[i] = values[i * 2]
-        right[i] = values[i * 2 + 1]
-      }
-      resolve([left, right])
+      if (totalBytes < 8 || totalBytes % 4) return reject(new Error('ffmpeg не вернул PCM-аудио'))
+      resolve(deinterleave(chunks, totalBytes))
     })
   })
 }
@@ -109,6 +142,7 @@ function writeWav(file, channels, rate) {
   const bits = 16
   const blockAlign = count * (bits / 8)
   const dataSize = frames * blockAlign
+  if (36 + dataSize > 0xFFFF_FFFF) throw new Error(`Дорожка «${path.basename(file)}» больше 4 ГБ: формат WAV не поддерживает такой размер`)
   const header = Buffer.alloc(44)
   header.write('RIFF', 0)
   header.writeUInt32LE(36 + dataSize, 4)
@@ -133,11 +167,17 @@ function writeWav(file, channels, rate) {
       pcm.writeInt16LE(value, (i * count + ch) * 2)
     }
   }
-  return writeFile(file, Buffer.concat([header, pcm]))
+  return writeFile(file, [header, pcm])
 }
 
 async function main() {
   await mkdir(outputDir, { recursive: true })
+  progress('decoding', 2, 'Проверка файла…')
+  const duration = await probeDuration()
+  if (cancelled) throw new Error('cancelled')
+  // A small margin keeps slightly inexact container durations decodable;
+  // the byte limit during decoding stays the hard stop.
+  if (duration !== null && duration > MAX_SECONDS * 1.05) throw new Error(TOO_LONG_MESSAGE)
   const channels = await runFfmpeg()
   if (cancelled) throw new Error('cancelled')
   progress('separating', 12, 'Разделение моделью MRX…')

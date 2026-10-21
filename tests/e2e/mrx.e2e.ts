@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { test } from '@e2e-dev/web'
 import { expect } from 'e2e'
+import { SIGN_IN_PATH } from './session.ts'
 
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 const fixture = (name: string) => path.join(E2E_DIR, 'fixtures', name)
@@ -77,7 +78,7 @@ async function upload(browser: any, names: string | string[]) {
 }
 
 test('an audio error does not block a later valid file', async ({ app, browser, screen }) => {
-  await app.open('/')
+  await app.open(SIGN_IN_PATH)
   await expect(screen.getByRole('heading', { name: 'Разделить звук' })).toBeVisible()
 
   await upload(browser, 'no-audio.mp4')
@@ -92,7 +93,7 @@ test('an audio error does not block a later valid file', async ({ app, browser, 
 })
 
 test('three WAV files produce three stems, ZIP, and stable previews', async ({ app, browser, screen }) => {
-  await app.open('/')
+  await app.open(SIGN_IN_PATH)
   await expect(screen.getByRole('heading', { name: 'Разделить звук' })).toBeVisible()
 
   const names = ['batch-a.wav', 'batch-b.wav', 'batch-c.wav']
@@ -156,7 +157,7 @@ test('three WAV files produce three stems, ZIP, and stable previews', async ({ a
 })
 
 test('cancelling a job allows a later job to recover', async ({ app, browser, screen }) => {
-  await app.open('/')
+  await app.open(SIGN_IN_PATH)
   await expect(screen.getByRole('heading', { name: 'Разделить звук' })).toBeVisible()
 
   await upload(browser, 'cancel.wav')

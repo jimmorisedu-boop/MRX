@@ -1,8 +1,8 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, rm, stat, readFile, writeFile, rename, realpath } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync } from 'node:fs'
+import { mkdir, rm, stat, open, writeFile, rename, realpath } from 'node:fs/promises'
+import { pipeline } from 'node:stream'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
@@ -23,7 +23,18 @@ const FFMPEG_PATH = path.resolve(process.env.MRX_FFMPEG || path.join(ROOT_DIR, '
 const MAX_FILE_BYTES = Number(process.env.MRX_MAX_FILE_BYTES || 1_500_000_000)
 const MAX_FILES = Number(process.env.MRX_MAX_FILES || 20)
 const START_PORT = Number(process.env.MRX_PORT || 17863)
-const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url')
+// The desktop app generates the session token and passes it in; a server
+// started by hand makes its own and prints a one-time sign-in link instead.
+const ENV_SESSION_TOKEN = process.env.MRX_SESSION_TOKEN || ''
+if (ENV_SESSION_TOKEN && !/^[A-Za-z0-9_-]{32,128}$/.test(ENV_SESSION_TOKEN)) throw new Error('MRX_SESSION_TOKEN must be 32-128 base64url characters')
+const SESSION_TOKEN = ENV_SESSION_TOKEN || crypto.randomBytes(32).toString('base64url')
+const DESKTOP_MODE = process.env.MRX_DESKTOP === '1'
+const PAGE_HEADERS = {
+  'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+}
 const VERSION = '1.0.0'
 
 const jobs = new Map()
@@ -57,6 +68,17 @@ function decodePathSegment(value) {
 }
 
 const id = () => crypto.randomBytes(12).toString('hex')
+
+const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+
+// Windows antivirus and indexers briefly hold freshly written files, so
+// recursive removals retry instead of leaving partial results behind.
+const removeTree = target => rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})
+
+function uploadWriteError(error, originalName) {
+  if (error?.code === 'ENOSPC') return 'Недостаточно места на диске для загрузки файла'
+  return `Не удалось сохранить файл «${originalName}»: ${error?.message || error}`
+}
 
 function publicJob(job) {
   return {
@@ -106,12 +128,18 @@ function sameOrigin(req) {
   }
 }
 
+function tokenMatches(value) {
+  const given = Buffer.from(String(value || ''))
+  const expected = Buffer.from(SESSION_TOKEN)
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected)
+}
+
 function authorizedMutation(req) {
-  return localHost(req) && sameOrigin(req) && parseCookies(req)[sessionCookieName()] === SESSION_TOKEN && req.headers['sec-fetch-site'] !== 'cross-site'
+  return authorizedSession(req) && sameOrigin(req) && req.headers['sec-fetch-site'] !== 'cross-site'
 }
 
 function authorizedSession(req) {
-  return localHost(req) && parseCookies(req)[sessionCookieName()] === SESSION_TOKEN
+  return localHost(req) && tokenMatches(parseCookies(req)[sessionCookieName()])
 }
 
 function setSession(res) {
@@ -206,7 +234,14 @@ async function saveMultipart(req) {
       let tooLarge = false
       stream.on('limit', () => { tooLarge = true; failed = `Файл «${originalName}» превышает допустимый размер` })
       stream.on('error', error => { failed ||= error.message; active.delete(pair); out.destroy() })
-      out.on('error', error => { failed ||= error.message })
+      // A failed write unpipes the busboy stream; left unread it would stall
+      // the whole request. The rest of the body is drained (no disk writes)
+      // so the client receives the error instead of a connection reset.
+      out.on('error', error => {
+        failed ||= uploadWriteError(error, originalName)
+        stream.unpipe(out)
+        stream.resume()
+      })
       out.on('close', () => {
         active.delete(pair)
         pending -= 1
@@ -251,27 +286,39 @@ function spawnWorker(job) {
   return runner
 }
 
-async function zipJob(job, outputDir) {
-  const zipName = `${job.baseName} — MRX stems.zip`
-  const zipPath = path.join(OUTPUT_DIR, job.id, zipName)
-  await new Promise((resolve, reject) => {
-    const output = createWriteStream(zipPath, { flags: 'w' })
-    const archive = archiver('zip', { zlib: { level: 6 } })
-    output.on('close', resolve)
-    output.on('error', reject)
-    archive.on('error', reject)
-    archive.pipe(output)
-    for (const item of job.outputs) {
-      const filePath = path.join(outputDir, item.filename)
-      archive.file(filePath, { name: item.filename })
+// The per-job ZIP is streamed on request instead of being stored next to the
+// WAVs, which would roughly double the disk space every job takes.
+async function streamJobZip(res, job) {
+  const root = path.resolve(OUTPUT_DIR, job.id)
+  const files = []
+  for (const item of job.outputs || []) {
+    const file = path.resolve(root, item.filename)
+    if (!pathInside(root, file)) return json(res, 404, { error: 'Файл не найден' })
+    try {
+      if (!(await stat(file)).isFile()) throw new Error('not a file')
+    } catch {
+      return json(res, 404, { error: `Дорожка «${item.filename}» не найдена` })
     }
-    archive.finalize().catch(reject)
+    files.push({ file, name: item.filename })
+  }
+  if (!files.length) return json(res, 404, { error: 'Файл не найден' })
+  res.writeHead(200, {
+    'content-type': 'application/zip',
+    'cache-control': 'no-store',
+    'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(job.zipName)}`,
   })
-  job.zipUrl = `/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(zipName)}`
+  const archive = archiver('zip', { zlib: { level: 1 } })
+  res.once('close', () => { if (!res.writableFinished) archive.abort() })
+  archive.on('warning', error => res.destroy(error))
+  pipeline(archive, res, () => {})
+  for (const item of files) archive.file(item.file, { name: item.name })
+  archive.finalize().catch(() => {})
 }
 
 async function removeInput(job) {
-  await rm(job.inputPath, { force: true }).catch(() => {})
+  // Inputs picked from disk in the desktop app are the user's own files.
+  if (!job.ownedInput || !job.inputPath) return
+  await rm(job.inputPath, { force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})
 }
 
 async function processJob(job) {
@@ -291,23 +338,19 @@ async function processJob(job) {
       job.status = 'cancelled'
       job.progress = 0
       job.message = 'Отменено пользователем'
-      await rm(runner.outputDir, { recursive: true, force: true }).catch(() => {})
+      await removeTree(runner.outputDir)
     } else if (exit.code !== 0 || !job.workerResult?.outputs) {
       const detail = job.workerError || runner.stderr?.trim().split(/\r?\n/).slice(-2).join(' ') || `worker exit ${exit.code ?? exit.signal}`
       throw new Error(detail)
     } else {
-      if (job.cancelRequested) throw new Error('cancelled')
-      job.status = 'encoding'
-      job.progress = 92
-      job.message = 'Упаковка результатов…'
       job.outputs = job.workerResult.outputs.map(item => ({
         label: item.label,
         filename: item.filename,
         url: `/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(item.filename)}`,
         previewUrl: `/api/preview/${encodeURIComponent(job.id)}/${encodeURIComponent(item.filename)}`,
       }))
-      await zipJob(job, runner.outputDir)
-      if (job.cancelRequested) throw new Error('cancelled')
+      job.zipName = `${job.baseName} — MRX stems.zip`
+      job.zipUrl = `/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(job.zipName)}`
       job.status = 'done'
       job.progress = 100
       job.message = 'Готово'
@@ -317,12 +360,12 @@ async function processJob(job) {
       job.status = 'cancelled'
       job.progress = 0
       job.message = 'Отменено пользователем'
-      if (runner) await rm(runner.outputDir, { recursive: true, force: true }).catch(() => {})
+      if (runner) await removeTree(runner.outputDir)
     } else {
       job.status = 'error'
       job.progress = 0
       job.message = String(error?.message || error).slice(0, 500)
-      if (runner) await rm(runner.outputDir, { recursive: true, force: true }).catch(() => {})
+      if (runner) await removeTree(runner.outputDir)
     }
   } finally {
     await removeInput(job)
@@ -521,6 +564,11 @@ async function buildExport(snapshot) {
       jobCount: snapshot.jobCount,
       skippedCount: snapshot.skippedCount,
     }
+    // Only the newest archive stays; older ones are full copies of the WAVs.
+    for (const [key, entry] of exportCache) {
+      exportCache.delete(key)
+      await rm(entry.filePath, { force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})
+    }
     exportCache.set(snapshot.key, { filePath, result })
     return result
   })()
@@ -545,17 +593,25 @@ async function downloadExport(req, res, encodedName) {
   return serveFile(res, file, 'application/zip', EXPORT_FILENAME)
 }
 
-async function serveFile(res, filePath, contentType, downloadName = null) {
+// The file is opened before any header is written, so a locked or vanished
+// file becomes an ordinary error response. pipeline() closes the handle when
+// the client aborts and keeps a read error from crashing the server.
+async function serveFile(res, filePath, contentType, downloadName = null, extraHeaders = {}) {
+  let handle
+  let info
   try {
-    const info = await stat(filePath)
-    if (!info.isFile()) throw new Error('not a file')
-    const headers = { 'content-type': contentType, 'content-length': info.size, 'cache-control': 'no-store' }
-    if (downloadName) headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
-    res.writeHead(200, headers)
-    createReadStream(filePath).pipe(res)
-  } catch {
-    json(res, 404, { error: 'Файл не найден' })
+    handle = await open(filePath, 'r')
+    info = await handle.stat()
+    if (!info.isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOENT' })
+  } catch (error) {
+    await handle?.close().catch(() => {})
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error?.code)) return json(res, 404, { error: 'Файл не найден' })
+    return json(res, 500, { error: `Не удалось прочитать файл (${error?.code || 'ошибка'}). Попробуйте ещё раз.` })
   }
+  const headers = { 'content-type': contentType, 'content-length': info.size, 'cache-control': 'no-store', ...extraHeaders }
+  if (downloadName) headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
+  res.writeHead(200, headers)
+  pipeline(handle.createReadStream(), res, () => {})
 }
 
 async function download(req, res, jobId, encodedName) {
@@ -563,12 +619,12 @@ async function download(req, res, jobId, encodedName) {
   if (!job || !['done'].includes(job.status)) return json(res, 404, { error: 'Результат ещё не готов' })
   let name
   try { name = decodeURIComponent(encodedName) } catch { return json(res, 400, { error: 'Неверное имя файла' }) }
+  if (job.zipName && name === job.zipName) return streamJobZip(res, job)
+  if (!(job.outputs || []).some(x => x.filename === name)) return json(res, 404, { error: 'Файл не найден' })
   const root = path.resolve(OUTPUT_DIR, job.id)
   const file = path.resolve(root, name)
-  if (!file.startsWith(root + path.sep) || file === root) return json(res, 400, { error: 'Недопустимый путь' })
-  if (!(job.outputs || []).some(x => x.filename === name) && path.basename(name) !== path.basename(job.zipUrl ? decodeURIComponent(job.zipUrl.split('/').pop()) : '')) return json(res, 404, { error: 'Файл не найден' })
-  const type = path.extname(file).toLowerCase() === '.zip' ? 'application/zip' : 'audio/wav'
-  return serveFile(res, file, type, name)
+  if (!pathInside(root, file)) return json(res, 400, { error: 'Недопустимый путь' })
+  return serveFile(res, file, 'audio/wav', name)
 }
 
 function parseSingleRange(value, size) {
@@ -662,13 +718,42 @@ async function preview(req, res, jobId, encodedName) {
   stream.pipe(res)
 }
 
+function addJob(name, inputPath, ownedInput) {
+  const jobId = id()
+  const job = { id: jobId, name, baseName: safeFileName(name, `input-${jobId.slice(0, 6)}`), inputPath, ownedInput, status: 'queued', progress: 0, message: 'В очереди', outputs: [], zipUrl: null }
+  jobs.set(jobId, job)
+  queue.push(job)
+}
+
+// Desktop drops are processed in place: copying multi-gigabyte videos through
+// HTTP would double their disk use. These inputs are never deleted.
+async function resolveLocalInputs(value) {
+  if (!Array.isArray(value) || !value.length) throw new Error('Выберите хотя бы один аудио или видео файл')
+  if (value.length > MAX_FILES) throw new Error(`Допустимо не более ${MAX_FILES} файлов`)
+  const inputs = []
+  for (const raw of value) {
+    if (typeof raw !== 'string' || !raw || raw.includes('\0') || !path.isAbsolute(raw)) throw new Error('Недопустимый путь к файлу')
+    const resolved = path.resolve(raw)
+    let info
+    try {
+      info = await stat(resolved)
+    } catch {
+      throw new Error(`Файл «${path.basename(resolved)}» не найден`)
+    }
+    if (!info.isFile()) throw new Error(`«${path.basename(resolved)}» не является файлом`)
+    inputs.push({ name: path.basename(resolved), path: resolved })
+  }
+  return inputs
+}
+
 async function handle(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   if (!localHost(req)) return json(res, 403, { error: 'Доступ только через localhost' })
-  if (req.method === 'GET' && url.pathname === '/api/state') {
-    setSession(res)
-    return json(res, 200, state())
+  if (url.pathname.startsWith('/api/') && !authorizedSession(req)) {
+    req.resume()
+    return json(res, 403, { error: 'Недействительная локальная сессия' })
   }
+  if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, state())
   if (url.pathname.startsWith('/api/preview/')) {
     const parts = url.pathname.split('/').filter(Boolean)
     if (!['GET', 'HEAD'].includes(req.method) || parts.length !== 4) return json(res, 404, { error: 'Не найдено' })
@@ -703,13 +788,26 @@ async function handle(req, res) {
     if (running && queue.length >= MAX_FILES) return json(res, 429, { error: 'Очередь заполнена' })
     try {
       const files = await saveMultipart(req)
-      for (const file of files) {
-        const jobId = id()
-        const job = { id: jobId, name: file.originalName, baseName: safeFileName(file.originalName, `input-${jobId.slice(0, 6)}`), inputPath: file.path, status: 'queued', progress: 0, message: 'В очереди', outputs: [], zipUrl: null }
-        jobs.set(jobId, job)
-        queue.push(job)
-      }
-      setSession(res)
+      for (const file of files) addJob(file.originalName, file.path, true)
+      pump()
+      return json(res, 200, state())
+    } catch (error) {
+      return json(res, 400, { error: String(error?.message || error).slice(0, 500) })
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/jobs/local') {
+    if (!DESKTOP_MODE) {
+      req.resume()
+      return json(res, 404, { error: 'Не найдено' })
+    }
+    if (running && queue.length >= MAX_FILES) {
+      req.resume()
+      return json(res, 429, { error: 'Очередь заполнена' })
+    }
+    try {
+      let body
+      try { body = JSON.parse(await parseBody(req)) } catch { throw new Error('Неверный запрос') }
+      for (const input of await resolveLocalInputs(body?.paths)) addJob(input.name, input.path, false)
       pump()
       return json(res, 200, state())
     } catch (error) {
@@ -732,18 +830,26 @@ async function handle(req, res) {
     setTimeout(() => shutdown(force), 30).unref()
     return
   }
-  if (req.method !== 'GET' || !url.pathname.startsWith('/')) return json(res, 404, { error: 'Не найдено' })
-  setSession(res)
+  if (req.method !== 'GET' || !url.pathname.startsWith('/') || url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Не найдено' })
+  if (url.pathname.startsWith('/signin/')) {
+    // Sign-in link: trade the token for the HttpOnly cookie and drop it from
+    // the address bar. A wrong token simply gets no session.
+    if (tokenMatches(decodePathSegment(url.pathname.slice('/signin/'.length)))) setSession(res)
+    // Always back to the app root: echoing the path would let "//host" act
+    // as an open redirect.
+    res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+    return res.end()
+  }
   const decodedPath = decodePathSegment(url.pathname.slice(1) || 'index.html')
   if (decodedPath === null) return json(res, 400, { error: 'Неверный путь' })
   let relative = decodedPath
   if (relative.includes('..') || relative.includes('\0')) relative = 'index.html'
   const file = path.resolve(PUBLIC_DIR, relative)
   if (!file.startsWith(PUBLIC_DIR + path.sep) && file !== PUBLIC_DIR) return json(res, 404, { error: 'Не найдено' })
-  if (!existsSync(file)) return serveFile(res, path.join(PUBLIC_DIR, 'index.html'), 'text/html; charset=utf-8')
+  if (!existsSync(file)) return serveFile(res, path.join(PUBLIC_DIR, 'index.html'), 'text/html; charset=utf-8', null, PAGE_HEADERS)
   const ext = path.extname(file).toLowerCase()
   const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
-  return serveFile(res, file, mime)
+  return serveFile(res, file, mime, null, PAGE_HEADERS)
 }
 
 async function shutdown(force = false) {
@@ -757,26 +863,51 @@ async function shutdown(force = false) {
     job.message = 'Сервер завершает работу'
     await removeInput(job)
   }
+  setTimeout(() => process.exit(0), 8000).unref()
   if (running?.runner?.child) {
-    const outputDir = running.runner.outputDir
-    running.cancelRequested = true
-    running.status = 'cancelled'
-    running.message = 'Сервер завершает работу'
-    running.runner.child.send({ type: 'cancel' }, () => {})
-    await rm(outputDir, { recursive: true, force: true }).catch(() => {})
-    setTimeout(async () => {
-      terminateWorkerTree(running?.runner?.child)
-      await rm(outputDir, { recursive: true, force: true }).catch(() => {})
-    }, 200).unref()
+    const job = running
+    const { child, outputDir } = job.runner
+    job.cancelRequested = true
+    job.status = 'cancelled'
+    job.message = 'Сервер завершает работу'
+    const exited = new Promise(resolve => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve()
+      else child.once('exit', resolve)
+    })
+    child.send({ type: 'cancel' }, () => {})
+    // Partial WAVs are removed only after the worker and FFmpeg have exited;
+    // removing them earlier fails on Windows while the files are still open.
+    if (!await Promise.race([exited.then(() => true), delay(500).then(() => false)])) {
+      terminateWorkerTree(child)
+      await Promise.race([exited, delay(2000)])
+    }
+    await removeTree(outputDir)
   }
+  await removeTree(EXPORT_DIR)
   await writeFile(path.join(DATA_DIR, 'server.json'), '', { flag: 'w' }).catch(() => {})
   server?.close(() => process.exit(0))
-  setTimeout(() => process.exit(0), force ? 1500 : 1000).unref()
+  server?.closeAllConnections()
+  setTimeout(() => process.exit(0), 500).unref()
+}
+
+// Leftovers of a crashed or killed session: inputs of unfinished uploads and
+// cached "save all" archives. Finished results in OUTPUT_DIR are kept.
+async function sweepStaleFiles() {
+  await removeTree(UPLOAD_DIR)
+  await removeTree(EXPORT_DIR)
 }
 
 async function start() {
+  await sweepStaleFiles()
   await Promise.all([mkdir(UPLOAD_DIR, { recursive: true }), mkdir(OUTPUT_DIR, { recursive: true }), mkdir(CACHE_DIR, { recursive: true })])
-  server = http.createServer((req, res) => { handle(req, res).catch(error => json(res, 500, { error: String(error?.message || error).slice(0, 500) })) })
+  // requestTimeout is disabled: one upload request can carry several large
+  // videos and legitimately take longer than Node's default five minutes.
+  server = http.createServer({ requestTimeout: 0 }, (req, res) => {
+    handle(req, res).catch(error => {
+      if (res.headersSent) res.destroy()
+      else json(res, 500, { error: String(error?.message || error).slice(0, 500) })
+    })
+  })
   let port = START_PORT
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
@@ -796,8 +927,13 @@ async function start() {
   const address = server.address()
   await writeFile(path.join(DATA_DIR, 'server.json'), JSON.stringify({ pid: process.pid, port: address.port, version: VERSION }, null, 2))
   process.stdout.write(`MRX_READY http://127.0.0.1:${address.port}/\n`)
+  if (ENV_SESSION_TOKEN) return
+  // The token is printed only when this process made it; in the desktop app
+  // stdout goes to a log file and the token stays with Electron.
+  const signInUrl = `http://127.0.0.1:${address.port}/signin/${SESSION_TOKEN}`
+  process.stdout.write(`MRX_OPEN ${signInUrl}\n`)
   if (process.env.MRX_NO_BROWSER !== '1' && process.platform === 'win32') {
-    const child = spawn('cmd.exe', ['/d', '/c', 'start', '', `http://127.0.0.1:${address.port}/`], { windowsHide: true, detached: true, stdio: 'ignore' })
+    const child = spawn('cmd.exe', ['/d', '/c', 'start', '', signInUrl], { windowsHide: true, detached: true, stdio: 'ignore' })
     child.unref()
   }
 }

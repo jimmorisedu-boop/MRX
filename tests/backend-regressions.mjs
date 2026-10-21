@@ -14,6 +14,7 @@ const PORT = Number(process.env.MRX_REGRESSION_PORT || 17982)
 let server
 let base
 let cookie
+const SESSION_TOKEN = 'mrx-test-session-token-0123456789abcdef'
 
 function makeWav(seconds = 1) {
   const rate = 44100
@@ -63,7 +64,6 @@ async function request(pathname, init = {}) {
   if (cookie) headers.set('cookie', cookie)
   if (init.method && init.method !== 'GET' && !headers.has('origin')) headers.set('origin', `${base}/`)
   const response = await fetch(`${base}${pathname}`, { ...init, headers })
-  if (!cookie) cookie = (response.headers.get('set-cookie') || '').split(';')[0]
   return response
 }
 
@@ -74,10 +74,11 @@ before(async () => {
   server = spawn(process.execPath, ['app/server.mjs'], {
     cwd: ROOT,
     windowsHide: true,
-    env: { ...process.env, MRX_NO_BROWSER: '1', MRX_PORT: String(PORT), MRX_DATA_DIR: DATA, MRX_FFMPEG: STAGED_FFMPEG },
+    env: { ...process.env, MRX_NO_BROWSER: '1', MRX_SESSION_TOKEN: SESSION_TOKEN, MRX_PORT: String(PORT), MRX_DATA_DIR: DATA, MRX_FFMPEG: STAGED_FFMPEG },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   base = await waitReady(server)
+  cookie = `mrx_session_${new URL(base).port}=${SESSION_TOKEN}`
   assert.equal((await request('/api/state')).status, 200)
 })
 

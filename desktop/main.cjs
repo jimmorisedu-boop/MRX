@@ -15,6 +15,7 @@ const fs = require('node:fs')
 const fsp = fs.promises
 const crypto = require('node:crypto')
 const { spawn } = require('node:child_process')
+const { serverExitAction } = require('./server-exit.cjs')
 
 const APP_DIR = __dirname
 const PACKAGED_LAYOUT = path.basename(path.dirname(APP_DIR)).toLowerCase() === 'app' &&
@@ -30,8 +31,12 @@ const FFMPEG_PATH = path.join(PORTABLE_ROOT, 'tools', 'ffmpeg.exe')
 const LOG_DIR = path.join(DATA_DIR, 'logs')
 const LOG_PATH = path.join(LOG_DIR, 'mrx-desktop.log')
 const WINDOW = { width: 760, height: 560, minWidth: 680, minHeight: 540 }
-const SMOKE_MODE = process.env.MRX_SMOKE === '1' || process.argv.includes('--mrx-smoke') || process.argv.includes('--mrx-smoke-result')
-const SMOKE_RESULT_MODE = process.env.MRX_SMOKE_MODE === 'result' || process.argv.includes('--mrx-smoke-result')
+// QA smoke runs are opt-in through the environment only.
+const SMOKE_MODE = process.env.MRX_SMOKE === '1'
+const SMOKE_RESULT_MODE = SMOKE_MODE && process.env.MRX_SMOKE_MODE === 'result'
+// The shell owns the session secret: the server accepts it from the
+// environment and never prints it, and the window gets it as a cookie.
+const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url')
 
 let mainWindow = null
 let serverProcess = null
@@ -40,8 +45,10 @@ let serverExitExpected = false
 let allowWindowClose = false
 let closeInFlight = false
 let startupReady = false
+let startupFailed = false
+let startupErrorShown = false
 let startupBuffer = ''
-let sessionCookie = ''
+let stderrTail = ''
 
 function log(message) {
   const line = `[${new Date().toISOString()}] ${String(message).replace(/\r?\n/g, '\n')}`
@@ -65,18 +72,31 @@ function resolvedServerUrl(value) {
   }
 }
 
+function nodeExecutablePath() {
+  if (fs.existsSync(NODE_PATH)) return NODE_PATH
+  // A portable build must use its own runtime, never whatever node is on PATH.
+  if (PACKAGED_LAYOUT) throw new Error(`Встроенный Node.js не найден: ${NODE_PATH}`)
+  return process.env.MRX_NODE_PATH || 'node'
+}
+
+function sessionCookieName() {
+  return `mrx_session_${new URL(serverUrl).port}`
+}
+
 function spawnServer() {
   if (!fs.existsSync(SERVER_PATH)) throw new Error(`Сервер не найден: ${SERVER_PATH}`)
-  const nodeExecutable = fs.existsSync(NODE_PATH) ? NODE_PATH : (process.env.MRX_NODE_PATH || 'node')
+  const nodeExecutable = nodeExecutablePath()
   const env = {
     ...process.env,
     MRX_NO_BROWSER: '1',
+    MRX_DESKTOP: '1',
+    MRX_SESSION_TOKEN: SESSION_TOKEN,
     MRX_DATA_DIR: DATA_DIR,
     MRX_WEIGHTS_DIR: WEIGHTS_DIR,
-    MRX_FFMPEG: FFMPEG_PATH,
-    ELECTRON_RUN_AS_NODE: undefined
+    MRX_FFMPEG: FFMPEG_PATH
   }
-  delete env.ELECTRON_RUN_AS_NODE
+  // A user's own Node settings must not leak into the bundled runtime.
+  for (const name of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[name]
   log(`Starting server with ${nodeExecutable}`)
   const child = spawn(nodeExecutable, [SERVER_PATH], {
     cwd: PORTABLE_ROOT,
@@ -99,30 +119,42 @@ function spawnServer() {
       }
     }
   })
-  child.stderr.on('data', (chunk) => log(`server stderr: ${chunk}`))
+  child.stderr.on('data', (chunk) => {
+    stderrTail = `${stderrTail}${chunk}`.slice(-4000)
+    log(`server stderr: ${chunk}`)
+  })
   child.on('error', (error) => log(`server process error: ${error.stack || error}`))
   child.on('exit', (code, signal) => {
     log(`Server exited code=${code} signal=${signal || ''}`)
     serverProcess = null
-    if (serverExitExpected || closeInFlight || !mainWindow || (startupReady && code === 0)) {
+    const action = serverExitAction({ startupReady, exitExpected: serverExitExpected, closing: closeInFlight, code })
+    if (action === 'quit') {
       allowWindowClose = true
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
       if (app.isReady()) app.quit()
-      return
-    }
-    if (startupReady && code !== 0) {
-      showStartupError(`Локальный сервер неожиданно завершился (код ${code ?? '—'}).`)
+    } else if (action === 'startup-error') {
+      startupFailed = true
+      showStartupError(`Локальный сервер MRX не запустился (код ${code ?? signal ?? '—'}).`, serverFailureDetail())
+    } else {
+      showStartupError(`Локальный сервер неожиданно завершился (код ${code ?? signal ?? '—'}).`, serverFailureDetail(), 'MRX — сервер остановился')
     }
   })
   return child
 }
 
-function showStartupError(message, detail = '') {
+function serverFailureDetail() {
+  const lines = stderrTail.trim().split(/\r?\n/).filter(Boolean).slice(-4).join('\n')
+  return lines ? `${lines}\n\nПроверьте комплект portable и попробуйте запустить MRX.exe ещё раз.` : ''
+}
+
+function showStartupError(message, detail = '', title = 'MRX — ошибка запуска') {
+  if (startupErrorShown) return
+  startupErrorShown = true
   log(`Startup failure: ${message} ${detail}`)
   const text = `${message}\n\nЖурнал запуска: ${LOG_PATH}`
   dialog.showMessageBoxSync({
     type: 'error',
-    title: 'MRX — ошибка запуска',
+    title,
     message: text,
     detail: detail || 'Проверьте комплект portable и попробуйте запустить MRX.exe ещё раз.'
   })
@@ -143,22 +175,15 @@ function isTrustedUrl(value) {
   }
 }
 
-async function serverCookieHeader() {
-  if (!serverUrl) return ''
-  try {
-    const cookies = await session.defaultSession.cookies.get({ url: serverUrl })
-    const header = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
-    return header || sessionCookie
-  } catch {
-    return sessionCookie
-  }
+function serverCookieHeader() {
+  return serverUrl ? `${sessionCookieName()}=${SESSION_TOKEN}` : ''
 }
 
 async function requestServer(pathname, method = 'GET') {
   if (!serverUrl) throw new Error('Локальный сервер не запущен')
   const target = new URL(pathname, serverUrl)
   if (!isTrustedUrl(target.href)) throw new Error('Недоверенный локальный адрес')
-  const cookie = await serverCookieHeader()
+  const cookie = serverCookieHeader()
   return new Promise((resolve, reject) => {
     const req = http.request(target, {
       method,
@@ -174,8 +199,6 @@ async function requestServer(pathname, method = 'GET') {
       res.on('end', () => {
         let payload = {}
         try { payload = body ? JSON.parse(body) : {} } catch {}
-        const setCookie = res.headers['set-cookie']
-        if (!sessionCookie && Array.isArray(setCookie) && setCookie[0]) sessionCookie = setCookie[0].split(';', 1)[0]
         const status = res.statusCode || 0
         if (status < 200 || status >= 300) {
           reject(new Error(payload?.error || `Локальный сервер ответил с кодом ${status}`))
@@ -204,7 +227,7 @@ async function uploadSmokeInput(inputPath) {
   const preamble = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${fileName}"\r\nContent-Type: audio/wav\r\n\r\n`, 'utf8')
   const ending = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
   const target = new URL('/api/jobs', serverUrl)
-  const cookie = await serverCookieHeader()
+  const cookie = serverCookieHeader()
   return new Promise((resolve, reject) => {
     const req = http.request(target, {
       method: 'POST',
@@ -222,8 +245,6 @@ async function uploadSmokeInput(inputPath) {
       res.on('end', () => {
         let payload = {}
         try { payload = body ? JSON.parse(body) : {} } catch {}
-        const setCookie = res.headers['set-cookie']
-        if (!sessionCookie && Array.isArray(setCookie) && setCookie[0]) sessionCookie = setCookie[0].split(';', 1)[0]
         const status = res.statusCode || 0
         if (status < 200 || status >= 300) {
           reject(new Error(payload?.error || `Smoke-загрузка завершилась с кодом ${status}`))
@@ -392,7 +413,8 @@ async function confirmAndClose() {
     serverExitExpected = true
     allowWindowClose = true
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
-    await waitForServerExit()
+    // The server first stops the worker and removes partial results.
+    await waitForServerExit(6000)
     terminateOwnedServer()
     await waitForServerExit(1200)
     app.quit()
@@ -433,8 +455,6 @@ async function captureSmoke(window) {
     if (SMOKE_RESULT_MODE) {
       const inputPath = process.env.MRX_SMOKE_INPUT
       if (!inputPath) throw new Error('Для smoke-результата не задан MRX_SMOKE_INPUT')
-      // Bootstrap the HttpOnly session cookie before posting the fixture.
-      await requestServer('/api/state')
       await uploadSmokeInput(inputPath)
       smokeState = await waitForSmokeResult()
       await smokeDelay(900)
@@ -465,6 +485,7 @@ async function captureSmoke(window) {
     serverExitExpected = true
     allowWindowClose = true
     await requestServer('/api/shutdown', 'POST').catch((error) => log(`Smoke shutdown failed: ${error.message || error}`))
+    await waitForServerExit(6000)
     if (window && !window.isDestroyed()) window.close()
     app.quit()
   }
@@ -520,7 +541,8 @@ function createWindow() {
   return mainWindow
 }
 
-ipcMain.handle('mrx-open-job-folder', async (_event, value) => {
+ipcMain.handle('mrx-open-job-folder', async (event, value) => {
+  if (!isTrustedUrl(event.senderFrame?.url)) throw new Error('Недоверенный источник запроса')
   const jobId = String(value || '')
   if (!/^[a-f0-9]{24}$/i.test(jobId)) throw new Error('Недопустимый идентификатор задачи')
   const outputRoot = path.resolve(OUTPUT_DIR)
@@ -554,10 +576,23 @@ if (!app.requestSingleInstanceLock()) {
     try {
       nativeTheme.themeSource = 'light'
       await fsp.mkdir(LOG_DIR, { recursive: true })
+      // The window needs no device or browser permissions at all.
+      session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+      session.defaultSession.setPermissionCheckHandler(() => false)
       spawnServer()
       const deadline = Date.now() + 30000
-      while (!startupReady && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+      while (!startupReady && !startupFailed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+      // An early server exit has already reported the failure.
+      if (startupFailed) return
       if (!startupReady || !serverUrl) throw new Error(startupBuffer || 'Сервер не сообщил адрес MRX_READY')
+      await session.defaultSession.cookies.set({
+        url: serverUrl,
+        name: sessionCookieName(),
+        value: SESSION_TOKEN,
+        httpOnly: true,
+        sameSite: 'strict',
+        path: '/'
+      })
       const window = createWindow()
       await window.loadURL(serverUrl)
       window.show()
@@ -567,5 +602,11 @@ if (!app.requestSingleInstanceLock()) {
       showStartupError('Не удалось запустить MRX.', error?.message || String(error))
     }
   }).catch((error) => showStartupError('Не удалось инициализировать окно MRX.', error?.message || String(error)))
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+  app.on('window-all-closed', () => {
+    // While a requested shutdown is in progress the server still has to stop
+    // its worker and remove partial results. Quitting now would kill it with
+    // the app's process tree, so confirmAndClose quits once it has exited.
+    if (closeInFlight && serverProcess) return
+    if (process.platform !== 'darwin') app.quit()
+  })
 }

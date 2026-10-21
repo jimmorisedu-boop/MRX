@@ -2,6 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { web } from '@e2e-dev/web'
 import type { E2EConfig } from 'e2e'
+import { SESSION_TOKEN } from './session.ts'
 
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT_DIR = path.resolve(E2E_DIR, '..', '..')
@@ -24,6 +25,7 @@ export default {
           MRX_DATA_DIR: dataDir,
           MRX_PORT: '17961',
           MRX_NO_BROWSER: '1',
+          MRX_SESSION_TOKEN: SESSION_TOKEN,
           MRX_FFMPEG: path.join(ROOT_DIR, 'dist', 'MRX', 'tools', 'ffmpeg.exe'),
           MRX_WEIGHTS_DIR: path.join(ROOT_DIR, 'weights'),
           E2E_TELEMETRY_DISABLED: '1',
