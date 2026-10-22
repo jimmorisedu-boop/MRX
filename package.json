@@ -4,7 +4,7 @@
   "description": "Офлайн локальное разделение звука MRX",
   "scripts": {
     "start": "node app/server.mjs",
-    "test": "node --test --test-concurrency=1 tests/backend.test.mjs tests/backend-export.test.mjs tests/backend-regressions.mjs tests/backend-robustness.test.mjs tests/desktop-server-exit.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/backend.test.mjs tests/backend-export.test.mjs tests/backend-regressions.mjs tests/backend-robustness.test.mjs tests/desktop-server-exit.test.mjs tests/desktop-startup-error.test.mjs"
   },
   "keywords": [],
   "private": true,

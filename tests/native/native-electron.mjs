@@ -9,7 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const DIST = path.resolve(process.env.MRX_PORTABLE_DIR || path.join(ROOT, 'dist', 'MRX'))
 const SOURCE_APP = path.join(ROOT, 'app')
 const SOURCE_DESKTOP = path.join(ROOT, 'desktop')
-const PORTABLE = path.join(ROOT, 'tests', 'native', 'portable')
+const PORTABLE = path.join(ROOT, 'tests', 'native', 'native-portable')
 const PORTABLE_APP = path.join(PORTABLE, 'resources', 'app')
 const EXE = path.join(PORTABLE, 'MRX.exe')
 const DATA = path.join(PORTABLE, 'data')
@@ -23,7 +23,7 @@ const report = {
   startedAt: new Date().toISOString(),
   playwrightCore: '1.64.0',
   packagedExecutable: EXE,
-  portableLayout: 'tests/native/portable (removed after run)',
+  portableLayout: 'tests/native/native-portable (removed after run)',
   dialogStubbing: 'electronApp.evaluate receives Electron module; dialog methods are mocked; no OS-dialog claim',
   checks: [],
   errors: []

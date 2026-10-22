@@ -16,6 +16,7 @@ const fsp = fs.promises
 const crypto = require('node:crypto')
 const { spawn } = require('node:child_process')
 const { serverExitAction } = require('./server-exit.cjs')
+const { showStartupErrorDialog } = require('./startup-error.cjs')
 
 const APP_DIR = __dirname
 const PACKAGED_LAYOUT = path.basename(path.dirname(APP_DIR)).toLowerCase() === 'app' &&
@@ -152,7 +153,9 @@ function showStartupError(message, detail = '', title = 'MRX — ошибка з
   startupErrorShown = true
   log(`Startup failure: ${message} ${detail}`)
   const text = `${message}\n\nЖурнал запуска: ${LOG_PATH}`
-  dialog.showMessageBoxSync({
+  showStartupErrorDialog((options) => dialog.showMessageBoxSync(options), () => {
+    shell.openPath(LOG_PATH).then((error) => { if (error) log(`Opening the log failed: ${error}`) })
+  }, {
     type: 'error',
     title,
     message: text,
