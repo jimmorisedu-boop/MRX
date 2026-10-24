@@ -182,10 +182,16 @@ try {
   Copy-Item -LiteralPath (Join-Path $Root 'third_party') -Destination (Join-Path $sourceRoot 'third_party') -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $Root 'package.json') -Destination (Join-Path $sourceRoot 'package.json') -Force
   Copy-Item -LiteralPath (Join-Path $Root 'package-lock.json') -Destination (Join-Path $sourceRoot 'package-lock.json') -Force
+  if (Test-Path -LiteralPath (Join-Path $Root 'docs') -PathType Container) {
+    Copy-Item -LiteralPath (Join-Path $Root 'docs') -Destination (Join-Path $sourceRoot 'docs') -Recurse -Force
+  }
   Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $sourceRoot 'README.md') -Force -ErrorAction SilentlyContinue
   Copy-Item -LiteralPath $Model -Destination (Join-Path $Out 'weights\mrx\mrx.int8.onnx') -Force
   Copy-Item -LiteralPath $Ffmpeg -Destination (Join-Path $Out 'tools\ffmpeg.exe') -Force
   foreach ($gitkeep in @('uploads', 'outputs', 'cache', 'logs')) { Set-Content -LiteralPath (Join-Path $Out "data\$gitkeep\.gitkeep") -Value '' -NoNewline }
+  if (Test-Path -LiteralPath (Join-Path $Root 'docs') -PathType Container) {
+    Copy-Item -LiteralPath (Join-Path $Root 'docs') -Destination (Join-Path $Out 'docs') -Recurse -Force
+  }
   Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $Out 'README.md') -Force -ErrorAction SilentlyContinue
 
   New-Item -ItemType Directory -Force -Path (Join-Path $Out 'LICENSES') | Out-Null

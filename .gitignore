@@ -43,6 +43,7 @@ node_modules/
 /tests/ui/*.wav
 /tests/ui/session/
 *.png
+!docs/assets/*.png
 
 # Editor and operating system files
 .DS_Store
